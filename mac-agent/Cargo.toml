@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/macagent-core",
+    "crates/macagent-app",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.78"
+authors = ["Bruce <bruce@hemory.com>"]
+license = "MIT"
+
+[workspace.dependencies]
+tokio = { version = "1.40", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+tray-icon = "0.21"
+tao = "0.30"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"

@@ -1,0 +1,19 @@
+[package]
+name = "macagent-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "macagent"
+path = "src/main.rs"
+
+[dependencies]
+macagent-core = { path = "../macagent-core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tray-icon = { workspace = true }
+tao = { workspace = true }
+image = { workspace = true }
