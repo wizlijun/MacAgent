@@ -6,6 +6,7 @@ pub mod ctrl_msg;
 pub mod pair_auth;
 pub mod rtc_peer;
 pub mod signaling;
+pub mod socket_proto;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

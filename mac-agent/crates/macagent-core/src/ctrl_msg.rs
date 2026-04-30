@@ -6,15 +6,222 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+// ---------------------------------------------------------------------------
+// Shared terminal types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TerminalLine {
+    pub index: u16,
+    pub runs: Vec<TerminalRun>,
+    pub wrapped: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TerminalRun {
+    pub text: String,
+    pub fg: Option<TerminalColor>,
+    pub bg: Option<TerminalColor>,
+    pub bold: bool,
+    pub dim: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub inverse: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TerminalColor {
+    Indexed { value: u8 },
+    Rgb { r: u8, g: u8, b: u8 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TerminalInput {
+    Text { data: String },
+    Key { key: InputKey },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputKey {
+    Enter,
+    Tab,
+    ShiftTab,
+    Backspace,
+    Escape,
+    ArrowUp,
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Delete,
+    CtrlA,
+    CtrlC,
+    CtrlD,
+    CtrlE,
+    CtrlK,
+    CtrlL,
+    CtrlR,
+    CtrlU,
+    CtrlW,
+    CtrlZ,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionInfo {
+    pub sid: String,
+    pub label: String,
+    pub argv: Vec<String>,
+    pub pid: u32,
+    pub cols: u16,
+    pub rows: u16,
+    pub started_ts: u64,
+    pub streaming: bool,
+    pub source: SessionSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionSource {
+    IosLaunched { launcher_id: String },
+    UserManual,
+}
+
+// ---------------------------------------------------------------------------
+// CtrlPayload
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CtrlPayload {
-    Ping { ts: u64, nonce: String },
-    Pong { ts: u64, nonce: String },
-    Heartbeat { ts: u64, nonce: String },
-    HeartbeatAck { ts: u64, nonce: String },
-    Error { code: String, msg: String },
+    // M1/M2 existing
+    Ping {
+        ts: u64,
+        nonce: String,
+    },
+    Pong {
+        ts: u64,
+        nonce: String,
+    },
+    Heartbeat {
+        ts: u64,
+        nonce: String,
+    },
+    HeartbeatAck {
+        ts: u64,
+        nonce: String,
+    },
+    Error {
+        code: String,
+        msg: String,
+    },
+
+    // M3 v2: session management
+    LaunchSession {
+        req_id: String,
+        launcher_id: String,
+        cwd_override: Option<String>,
+    },
+    LaunchAck {
+        req_id: String,
+        sid: String,
+    },
+    LaunchReject {
+        req_id: String,
+        code: String,
+        reason: String,
+    },
+    AttachSession {
+        sid: String,
+    },
+    DetachSession {
+        sid: String,
+    },
+    KillSession {
+        sid: String,
+    },
+    SessionList {
+        sessions: Vec<SessionInfo>,
+    },
+    SessionAdded {
+        session: SessionInfo,
+    },
+    SessionRemoved {
+        sid: String,
+        reason: String,
+    },
+    SessionExited {
+        sid: String,
+        exit_status: Option<i32>,
+        reason: String,
+    },
+
+    // M3 v2: terminal data
+    TermSnapshot {
+        sid: String,
+        revision: u64,
+        cols: u16,
+        rows: u16,
+        cursor_row: u16,
+        cursor_col: u16,
+        cursor_visible: bool,
+        title: Option<String>,
+        lines: Vec<TerminalLine>,
+    },
+    TermDelta {
+        sid: String,
+        revision: u64,
+        cols: u16,
+        rows: u16,
+        cursor_row: u16,
+        cursor_col: u16,
+        cursor_visible: bool,
+        title: Option<String>,
+        lines: Vec<TerminalLine>,
+    },
+    TermHistorySnapshot {
+        sid: String,
+        revision: u64,
+        lines: Vec<String>,
+    },
+    TermHistoryAppend {
+        sid: String,
+        revision: u64,
+        lines: Vec<String>,
+    },
+
+    // M3 v2: input
+    Input {
+        sid: String,
+        payload: TerminalInput,
+    },
+    Resize {
+        sid: String,
+        cols: u16,
+        rows: u16,
+    },
 }
+
+// ---------------------------------------------------------------------------
+// SignedCtrl + canonical_bytes + sign + verify
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedCtrl {
@@ -24,7 +231,7 @@ pub struct SignedCtrl {
 }
 
 pub fn canonical_bytes(payload: &CtrlPayload) -> Vec<u8> {
-    // 用 BTreeMap 排序保证 key 排序稳定
+    // BTreeMap 保证 key 排序稳定
     let v = serde_json::to_value(payload).unwrap();
     let sorted: BTreeMap<String, serde_json::Value> =
         v.as_object().unwrap().clone().into_iter().collect();
