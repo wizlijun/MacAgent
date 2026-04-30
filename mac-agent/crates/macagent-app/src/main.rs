@@ -7,6 +7,7 @@ mod pair_qr;
 mod producer_registry;
 mod rtc_glue;
 mod run;
+mod session_router;
 mod ui;
 
 use clap::{Parser, Subcommand};

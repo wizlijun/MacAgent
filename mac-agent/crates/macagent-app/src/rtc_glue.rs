@@ -43,6 +43,12 @@ pub struct GlueConfig {
     pub mac_device_secret_b64: String,
     pub local_keys: Arc<PairAuth>,
     pub peer_pubkey_b64: String,
+    /// Decoded+verified ctrl payloads from iOS are forwarded here (for session_router).
+    /// If None, payloads are only forwarded to ctrl_msg_tx as raw JSON.
+    pub ctrl_recv_tx: Option<mpsc::UnboundedSender<CtrlPayload>>,
+    /// Outbound ctrl payloads to sign+send to iOS.  SessionRouter pushes here.
+    pub ctrl_send_rx:
+        Option<std::sync::Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<CtrlPayload>>>>,
 }
 
 // ── Wire frame ───────────────────────────────────────────────────────────────
@@ -124,6 +130,9 @@ pub async fn run_glue(
     state_tx: mpsc::UnboundedSender<GlueState>,
     ctrl_msg_tx: mpsc::UnboundedSender<String>,
 ) -> Result<()> {
+    // Extract session-router channels from config before moving cfg.
+    let ctrl_recv_tx = cfg.ctrl_recv_tx.clone();
+    let ctrl_send_rx = cfg.ctrl_send_rx.clone();
     let _ = state_tx.send(GlueState::FetchingTurn);
     let ice = fetch_turn_cred(&cfg).await?;
 
@@ -144,10 +153,11 @@ pub async fn run_glue(
     let (ack_tx, ack_rx) = mpsc::unbounded_channel::<()>();
     let (miss_tx, mut miss_rx) = mpsc::unbounded_channel::<()>();
 
-    // ctrl channel → ctrl_msg_tx + handle hb/hb_ack
+    // ctrl channel → ctrl_msg_tx + handle hb/hb_ack + dispatch to session_router
     let cmsg_tx = ctrl_msg_tx.clone();
     let ctrl_for_cb = Arc::clone(&ctrl);
     let ss_for_cb = shared_secret;
+    let router_recv_tx = ctrl_recv_tx.clone();
     ctrl.on_message(move |m| {
         // Try to parse as SignedCtrl and handle heartbeat variants
         if let Ok(signed) = serde_json::from_str::<macagent_core::ctrl_msg::SignedCtrl>(&m) {
@@ -174,19 +184,50 @@ pub async fn run_glue(
                                 let _ = ctrl_reply.send_text(&json).await;
                             }
                         });
-                        return; // don't forward to ctrl_msg_tx
+                        return; // don't forward
                     }
                     CtrlPayload::HeartbeatAck { .. } => {
                         let _ = ack_tx.send(());
-                        return; // don't forward to ctrl_msg_tx
+                        return; // don't forward
                     }
-                    _ => {}
+                    _ => {
+                        // Forward to session_router if wired
+                        if let Some(ref tx) = router_recv_tx {
+                            let _ = tx.send(signed.payload.clone());
+                        }
+                    }
                 }
             }
         }
         let _ = cmsg_tx.send(m);
     })
     .await;
+
+    // Outbound ctrl send task: drain ctrl_send_rx and sign+send to iOS
+    if let Some(send_rx_arc) = ctrl_send_rx.clone() {
+        let ctrl_for_send = Arc::clone(&ctrl);
+        let ss_send = shared_secret;
+        tokio::spawn(async move {
+            loop {
+                let payload = {
+                    let mut guard = send_rx_arc.lock().await;
+                    guard.recv().await
+                };
+                match payload {
+                    Some(p) => {
+                        let signed = ctrl_msg::sign(p, &ss_send);
+                        match serde_json::to_string(&signed) {
+                            Ok(json) => {
+                                let _ = ctrl_for_send.send_text(&json).await;
+                            }
+                            Err(e) => eprintln!("[glue] ctrl send serialize error: {e}"),
+                        }
+                    }
+                    None => break,
+                }
+            }
+        });
+    }
 
     // Peer state → state_tx; also start heartbeat on Connected
     let st_tx = state_tx.clone();

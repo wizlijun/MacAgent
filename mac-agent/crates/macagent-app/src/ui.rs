@@ -11,7 +11,11 @@ use egui::ColorImage;
 use macagent_core::pair_auth::{PairAuth, PairRecord, PairToken, X25519Pub};
 use tokio::sync::mpsc as async_mpsc;
 
+use crate::agent_socket::AgentSocket;
+use crate::launcher::LauncherConfig;
+use crate::producer_registry::ProducerRegistry;
 use crate::rtc_glue::{run_glue, GlueConfig, GlueState};
+use crate::session_router::{run_socket_event_loop, SessionRouter};
 use crate::{keychain, pair_qr};
 
 // ── Keychain keys ───────────────────────────────────────────────────────────
@@ -71,6 +75,23 @@ pub struct MacAgentApp {
     glue_state_rx: async_mpsc::UnboundedReceiver<GlueState>,
     pub glue_msg_tx: async_mpsc::UnboundedSender<String>,
     glue_msg_rx: async_mpsc::UnboundedReceiver<String>,
+    // ── Session router channels ────────────────────────────────────────────
+    /// Outbound CtrlPayload from SessionRouter → rtc_glue → iOS.
+    /// Held to keep the sender alive so the Arc<Mutex<Receiver>> stays open.
+    #[allow(dead_code)]
+    ctrl_send_tx: async_mpsc::UnboundedSender<macagent_core::ctrl_msg::CtrlPayload>,
+    ctrl_send_rx: std::sync::Arc<
+        tokio::sync::Mutex<async_mpsc::UnboundedReceiver<macagent_core::ctrl_msg::CtrlPayload>>,
+    >,
+    /// Inbound CtrlPayload from iOS → SessionRouter.
+    ctrl_recv_tx: async_mpsc::UnboundedSender<macagent_core::ctrl_msg::CtrlPayload>,
+    /// Held to keep the receiver alive (task drains it).
+    #[allow(dead_code)]
+    ctrl_recv_rx: std::sync::Arc<
+        tokio::sync::Mutex<async_mpsc::UnboundedReceiver<macagent_core::ctrl_msg::CtrlPayload>>,
+    >,
+    /// Shared router (kept alive as long as the app runs).
+    _router: std::sync::Arc<SessionRouter>,
 }
 
 impl MacAgentApp {
@@ -102,6 +123,55 @@ impl MacAgentApp {
         let (glue_state_tx, glue_state_rx) = async_mpsc::unbounded_channel();
         let (glue_msg_tx, glue_msg_rx) = async_mpsc::unbounded_channel();
 
+        // ── Session router setup ──────────────────────────────────────────────
+        let (ctrl_send_tx, ctrl_send_rx) = async_mpsc::unbounded_channel();
+        let (ctrl_recv_tx, ctrl_recv_rx) = async_mpsc::unbounded_channel();
+
+        let registry = std::sync::Arc::new(ProducerRegistry::new());
+        let launcher_config = std::sync::Arc::new(
+            runtime
+                .block_on(crate::launcher::load_or_init())
+                .unwrap_or_else(|_| LauncherConfig::default_config()),
+        );
+        let router = std::sync::Arc::new(SessionRouter::new(
+            std::sync::Arc::clone(&registry),
+            ctrl_send_tx.clone(),
+            std::sync::Arc::clone(&launcher_config),
+        ));
+
+        // Start AgentSocket and wire socket events → router
+        let router_for_socket = std::sync::Arc::clone(&router);
+        runtime.spawn(async move {
+            match AgentSocket::start(registry).await {
+                Ok(socket) => {
+                    run_socket_event_loop(socket.events_rx, router_for_socket).await;
+                }
+                Err(e) => eprintln!("[ui] AgentSocket start error: {e}"),
+            }
+        });
+
+        // Start ctrl_recv dispatch: ctrl_recv_rx → router.handle_ctrl_from_ios
+        let router_for_ctrl = std::sync::Arc::clone(&router);
+        let ctrl_send_rx_arc = std::sync::Arc::new(tokio::sync::Mutex::new(ctrl_send_rx));
+        let ctrl_recv_rx_arc = std::sync::Arc::new(tokio::sync::Mutex::new(ctrl_recv_rx));
+        let ctrl_recv_rx_for_task = std::sync::Arc::clone(&ctrl_recv_rx_arc);
+        runtime.spawn(async move {
+            loop {
+                let payload = {
+                    let mut guard = ctrl_recv_rx_for_task.lock().await;
+                    guard.recv().await
+                };
+                match payload {
+                    Some(p) => {
+                        if let Err(e) = router_for_ctrl.handle_ctrl_from_ios(p).await {
+                            eprintln!("[ui] ctrl_from_ios error: {e}");
+                        }
+                    }
+                    None => break,
+                }
+            }
+        });
+
         Ok(Self {
             worker_url,
             local_keys,
@@ -118,6 +188,11 @@ impl MacAgentApp {
             glue_state_rx,
             glue_msg_tx,
             glue_msg_rx,
+            ctrl_send_tx,
+            ctrl_send_rx: ctrl_send_rx_arc,
+            ctrl_recv_tx,
+            ctrl_recv_rx: ctrl_recv_rx_arc,
+            _router: router,
         })
     }
 
@@ -521,6 +596,8 @@ impl eframe::App for MacAgentApp {
                             mac_device_secret_b64: record.mac_device_secret_b64.clone(),
                             local_keys: Arc::clone(&self.local_keys),
                             peer_pubkey_b64: record.peer_pubkey_b64.clone(),
+                            ctrl_recv_tx: Some(self.ctrl_recv_tx.clone()),
+                            ctrl_send_rx: Some(Arc::clone(&self.ctrl_send_rx)),
                         };
                         let state_tx = self.glue_state_tx.clone();
                         let msg_tx = self.glue_msg_tx.clone();
