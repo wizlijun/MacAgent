@@ -10,6 +10,7 @@ on:
     paths:
       - "mac-agent/**"
       - ".github/workflows/rust.yml"
+  workflow_dispatch:
 
 jobs:
   test:
