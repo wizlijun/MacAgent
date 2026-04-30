@@ -1,8 +1,8 @@
-import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
 import { handlePairCreate, handlePairClaim } from "./pair";
 
 export type { Env } from "./env";
+export { SignalingRoom } from "./signaling";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -20,13 +20,13 @@ export default {
       return handlePairClaim(request, env);
     }
 
+    if (url.pathname.startsWith("/signal/")) {
+      const pair_id = url.pathname.slice("/signal/".length);
+      const id = env.SIGNALING_ROOM.idFromName(pair_id);
+      const stub = env.SIGNALING_ROOM.get(id);
+      return stub.fetch(request);
+    }
+
     return new Response("not found", { status: 404 });
   },
 };
-
-// SignalingRoom 在 M1.3 实现，这里仍是 stub 让 wrangler.toml 解析
-export class SignalingRoom extends DurableObject {
-  override async fetch(_request: Request): Promise<Response> {
-    return new Response("not implemented", { status: 501 });
-  }
-}
