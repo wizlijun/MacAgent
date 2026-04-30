@@ -1823,12 +1823,14 @@ dependencies = [
  "image",
  "macagent-core",
  "qrcode",
+ "rand 0.8.6",
  "reqwest",
  "security-framework",
  "serde",
  "serde_json",
  "tokio",
  "uuid",
+ "webrtc",
 ]
 
 [[package]]

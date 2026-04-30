@@ -5,6 +5,7 @@
 
 mod keychain;
 mod pair_qr;
+mod rtc_glue;
 mod ui;
 
 use anyhow::Result;

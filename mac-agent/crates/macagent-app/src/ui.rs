@@ -3,13 +3,15 @@
 //! States: NotPaired → Pairing (QR shown) → Paired
 //! Transitions are driven by results arriving from the reqwest task via mpsc.
 
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use anyhow::Result;
 use egui::ColorImage;
 use macagent_core::pair_auth::{PairAuth, PairRecord, PairToken, X25519Pub};
+use tokio::sync::mpsc as async_mpsc;
 
+use crate::rtc_glue::{run_glue, GlueConfig, GlueState};
 use crate::{keychain, pair_qr};
 
 // ── Keychain keys ───────────────────────────────────────────────────────────
@@ -51,7 +53,7 @@ pub enum UiEvent {
 
 pub struct MacAgentApp {
     pub worker_url: String,
-    pub local_keys: PairAuth,
+    pub local_keys: Arc<PairAuth>,
     pub state: PairState,
     pub last_error: Option<String>,
     /// PNG bytes from a just-completed /pair/create, pending texture upload.
@@ -63,6 +65,12 @@ pub struct MacAgentApp {
     pub pending_room_id: Option<String>,
     /// mac_device_secret from /pair/create, held until pairing completes.
     pub pending_mac_device_secret: Option<String>,
+    // ── RTC glue ──────────────────────────────────────────────────────────
+    pub glue_state: Option<GlueState>,
+    pub glue_state_tx: async_mpsc::UnboundedSender<GlueState>,
+    glue_state_rx: async_mpsc::UnboundedReceiver<GlueState>,
+    pub glue_msg_tx: async_mpsc::UnboundedSender<String>,
+    glue_msg_rx: async_mpsc::UnboundedReceiver<String>,
 }
 
 impl MacAgentApp {
@@ -72,7 +80,7 @@ impl MacAgentApp {
             .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
 
         // Load or generate local X25519 keypair.
-        let local_keys = match keychain::load(KC_LOCAL_SECRET)? {
+        let local_keys = Arc::new(match keychain::load(KC_LOCAL_SECRET)? {
             Some(bytes) if bytes.len() == 32 => {
                 let arr: [u8; 32] = bytes.try_into().unwrap();
                 PairAuth::from_secret_bytes(arr)
@@ -82,7 +90,7 @@ impl MacAgentApp {
                 keychain::save(KC_LOCAL_SECRET, &keys.secret_bytes())?;
                 keys
             }
-        };
+        });
 
         // Check for existing pair record in Keychain.
         let state = match Self::load_pair_record()? {
@@ -91,6 +99,8 @@ impl MacAgentApp {
         };
 
         let (tx, rx) = mpsc::sync_channel(4);
+        let (glue_state_tx, glue_state_rx) = async_mpsc::unbounded_channel();
+        let (glue_msg_tx, glue_msg_rx) = async_mpsc::unbounded_channel();
 
         Ok(Self {
             worker_url,
@@ -103,6 +113,11 @@ impl MacAgentApp {
             runtime,
             rx,
             tx,
+            glue_state: None,
+            glue_state_tx,
+            glue_state_rx,
+            glue_msg_tx,
+            glue_msg_rx,
         })
     }
 
@@ -267,6 +282,7 @@ impl MacAgentApp {
     fn render_state(
         state: &PairState,
         last_error: &Option<String>,
+        glue_state: Option<GlueState>,
         ui: &mut egui::Ui,
     ) -> Option<StateTransition> {
         match state {
@@ -296,6 +312,12 @@ impl MacAgentApp {
                 let short_id = &record.pair_id[..id_len];
                 ui.label(format!("Paired — device id: {}…", short_id));
                 ui.label(format!("Worker: {}", record.worker_url));
+                if ui.button("Connect (M2)").clicked() {
+                    return Some(StateTransition::Connect);
+                }
+                if let Some(gs) = glue_state {
+                    ui.label(format!("RTC: {:?}", gs));
+                }
                 if ui.button("Revoke").clicked() {
                     return Some(StateTransition::Revoke);
                 }
@@ -308,6 +330,7 @@ impl MacAgentApp {
 enum StateTransition {
     StartPairing,
     CancelPairing,
+    Connect,
     Revoke,
 }
 
@@ -431,11 +454,19 @@ impl eframe::App for MacAgentApp {
 
         self.poll_rx();
 
+        // Drain glue state updates.
+        while let Ok(gs) = self.glue_state_rx.try_recv() {
+            self.glue_state = Some(gs);
+        }
+        // Drain glue ctrl messages (M2.5 will process them; discard for now).
+        while self.glue_msg_rx.try_recv().is_ok() {}
+
+        let glue_state = self.glue_state;
         let transition = egui::CentralPanel::default()
             .show(ctx, |ui| {
                 ui.heading(format!("macagent v{}", macagent_core::version()));
                 ui.separator();
-                Self::render_state(&self.state, &self.last_error, ui)
+                Self::render_state(&self.state, &self.last_error, glue_state, ui)
             })
             .inner;
 
@@ -450,6 +481,24 @@ impl eframe::App for MacAgentApp {
                 StateTransition::CancelPairing => {
                     self.state = PairState::NotPaired;
                 }
+                StateTransition::Connect => {
+                    if let PairState::Paired { record } = &self.state {
+                        let cfg = GlueConfig {
+                            worker_url: record.worker_url.clone(),
+                            pair_id: record.pair_id.clone(),
+                            mac_device_secret_b64: record.mac_device_secret_b64.clone(),
+                            local_keys: Arc::clone(&self.local_keys),
+                            peer_pubkey_b64: record.peer_pubkey_b64.clone(),
+                        };
+                        let state_tx = self.glue_state_tx.clone();
+                        let msg_tx = self.glue_msg_tx.clone();
+                        self.runtime.spawn(async move {
+                            if let Err(e) = run_glue(cfg, state_tx, msg_tx).await {
+                                eprintln!("glue error: {e}");
+                            }
+                        });
+                    }
+                }
                 StateTransition::Revoke => {
                     // Best-effort: fire-and-forget the Worker revoke call.
                     if let PairState::Paired { record } = &self.state {
@@ -459,6 +508,7 @@ impl eframe::App for MacAgentApp {
                         self.last_error = Some(e.to_string());
                     } else {
                         self.state = PairState::NotPaired;
+                        self.glue_state = None;
                     }
                 }
             }
