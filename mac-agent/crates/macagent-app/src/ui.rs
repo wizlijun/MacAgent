@@ -150,6 +150,17 @@ impl MacAgentApp {
         Ok(())
     }
 
+    fn spawn_worker_revoke(&self, record: &PairRecord) {
+        let worker_url = record.worker_url.clone();
+        let pair_id = record.pair_id.clone();
+        let mac_device_secret_b64 = record.mac_device_secret_b64.clone();
+        self.runtime.spawn(async move {
+            if let Err(e) = worker_revoke(&worker_url, &pair_id, &mac_device_secret_b64).await {
+                eprintln!("worker_revoke failed (best-effort): {e}");
+            }
+        });
+    }
+
     /// Spawn a reqwest task to call POST /pair/create.
     fn start_pairing(&self) {
         let worker_url = self.worker_url.clone();
@@ -381,6 +392,28 @@ async fn pair_create_request(worker_url: &str, pubkey_b64: &str) -> Result<(Pair
     Ok((token, png))
 }
 
+// ── revoke helper ───────────────────────────────────────────────────────────
+
+async fn worker_revoke(
+    worker_url: &str,
+    pair_id: &str,
+    mac_device_secret_b64: &str,
+) -> anyhow::Result<()> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts: u64 = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+    let secret = B64.decode(mac_device_secret_b64)?;
+    let msg = format!("revoke|{pair_id}|{ts}");
+    let sig = B64.encode(macagent_core::pair_auth::hmac_sign(&secret, msg.as_bytes()));
+    let resp = reqwest::Client::new()
+        .post(format!("{}/pair/revoke", worker_url.trim_end_matches('/')))
+        .json(&serde_json::json!({ "pair_id": pair_id, "ts": ts, "sig": sig }))
+        .send()
+        .await?;
+    resp.error_for_status()?;
+    Ok(())
+}
+
 // ── eframe App impl ─────────────────────────────────────────────────────────
 
 impl eframe::App for MacAgentApp {
@@ -418,6 +451,10 @@ impl eframe::App for MacAgentApp {
                     self.state = PairState::NotPaired;
                 }
                 StateTransition::Revoke => {
+                    // Best-effort: fire-and-forget the Worker revoke call.
+                    if let PairState::Paired { record } = &self.state {
+                        self.spawn_worker_revoke(record);
+                    }
                     if let Err(e) = Self::revoke_pair_record() {
                         self.last_error = Some(e.to_string());
                     } else {

@@ -21,7 +21,7 @@ struct PairedView: View {
 
             if let r = pingResult { Text(r).font(.caption.monospaced()).multilineTextAlignment(.center) }
 
-            Button("撤销并重新配对") { try? store.revoke() }.buttonStyle(.bordered).tint(.red)
+            Button("撤销并重新配对") { Task { await store.revoke() } }.buttonStyle(.bordered).tint(.red)
         }
         .padding()
     }
