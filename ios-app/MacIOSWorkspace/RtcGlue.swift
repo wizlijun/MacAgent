@@ -7,6 +7,7 @@ actor RtcGlue {
     private var rtc: RtcClient?
     private var ws: SignalingClient?
     private var stateContinuation: AsyncStream<GlueState>.Continuation?
+    private var ctrlPayloadContinuation: AsyncStream<CtrlPayload>.Continuation?
 
     // Heartbeat state (iOS is answerer; Mac sends hb, iOS sends hb_ack)
     private var hbAckCount: Int = 0
@@ -25,6 +26,24 @@ actor RtcGlue {
 
     private func setContinuation(_ c: AsyncStream<GlueState>.Continuation) {
         stateContinuation = c
+    }
+
+    nonisolated func ctrlMessages() -> AsyncStream<CtrlPayload> {
+        AsyncStream { continuation in
+            Task { await self.setCtrlPayloadContinuation(continuation) }
+        }
+    }
+
+    private func setCtrlPayloadContinuation(_ c: AsyncStream<CtrlPayload>.Continuation) {
+        ctrlPayloadContinuation = c
+    }
+
+    func sendCtrl(_ payload: CtrlPayload) async {
+        guard let ss = sharedSecret,
+              let signed = try? SignedCtrl.sign(payload, sharedSecret: ss),
+              let json = try? JSONEncoder().encode(signed),
+              let str = String(data: json, encoding: .utf8) else { return }
+        await rtc?.sendCtrl(str)
     }
 
     private func emit(_ s: GlueState) {
@@ -154,7 +173,7 @@ actor RtcGlue {
             break
 
         default:
-            break
+            ctrlPayloadContinuation?.yield(signed.payload)
         }
     }
 

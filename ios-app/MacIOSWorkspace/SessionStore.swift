@@ -1,0 +1,157 @@
+import Foundation
+import Observation
+
+@MainActor
+@Observable
+final class SessionStore {
+    private(set) var sessions: [SessionInfo] = []
+    private(set) var sessionStates: [String: TermSessionState] = [:]
+
+    private let glue: RtcGlue?
+
+    init(glue: RtcGlue?) {
+        self.glue = glue
+    }
+
+    func bind() async {
+        guard let glue else { return }
+        for await payload in await glue.ctrlMessages() {
+            handle(payload)
+        }
+    }
+
+    private func handle(_ payload: CtrlPayload) {
+        switch payload {
+        case .sessionList(let list):
+            sessions = list
+            sessionStates = sessionStates.filter { id, _ in list.contains(where: { $0.sid == id }) }
+
+        case .sessionAdded(let info):
+            if !sessions.contains(where: { $0.sid == info.sid }) {
+                sessions.append(info)
+            }
+
+        case .sessionRemoved(let sid, _):
+            sessions.removeAll(where: { $0.sid == sid })
+            sessionStates.removeValue(forKey: sid)
+
+        case .sessionExited(let sid, _, _):
+            if let i = sessions.firstIndex(where: { $0.sid == sid }) {
+                let s = sessions[i]
+                sessions[i] = SessionInfo(
+                    sid: s.sid, label: s.label, argv: s.argv, pid: s.pid,
+                    cols: s.cols, rows: s.rows, startedTs: s.startedTs,
+                    streaming: false, source: s.source
+                )
+            }
+
+        case .termSnapshot(let sid, let revision, let cols, let rows,
+                           let cr, let cc, let cv, let title, let lines):
+            sessionStates[sid] = TermSessionState(
+                revision: revision, cols: cols, rows: rows,
+                cursorRow: cr, cursorCol: cc, cursorVisible: cv,
+                title: title, lines: lines,
+                history: sessionStates[sid]?.history ?? []
+            )
+
+        case .termDelta(let sid, let revision, let cols, let rows,
+                        let cr, let cc, let cv, let title, let lines):
+            guard var st = sessionStates[sid] else { return }
+            st.revision = revision; st.cols = cols; st.rows = rows
+            st.cursorRow = cr; st.cursorCol = cc; st.cursorVisible = cv
+            st.title = title
+            for line in lines {
+                let i = Int(line.index)
+                if i < st.lines.count {
+                    st.lines[i] = line
+                } else {
+                    while st.lines.count <= i {
+                        st.lines.append(TerminalLine(
+                            index: UInt16(st.lines.count), runs: [], wrapped: false
+                        ))
+                    }
+                    st.lines[i] = line
+                }
+            }
+            if st.lines.count > Int(rows) {
+                st.lines = Array(st.lines.prefix(Int(rows)))
+            }
+            sessionStates[sid] = st
+
+        case .termHistorySnapshot(let sid, _, let lines):
+            if var st = sessionStates[sid] {
+                st.history = lines
+                sessionStates[sid] = st
+            }
+
+        case .termHistoryAppend(let sid, _, let lines):
+            if var st = sessionStates[sid] {
+                st.history.append(contentsOf: lines)
+                if st.history.count > 1000 {
+                    st.history.removeFirst(st.history.count - 1000)
+                }
+                sessionStates[sid] = st
+            }
+
+        default:
+            break
+        }
+    }
+
+    // MARK: - Outbound
+
+    func launch(launcherId: String) async {
+        let reqId = UUID().uuidString
+        await glue?.sendCtrl(.launchSession(reqId: reqId, launcherId: launcherId, cwdOverride: nil))
+    }
+
+    func attach(sid: String) async {
+        await glue?.sendCtrl(.attachSession(sid: sid))
+    }
+
+    func detach(sid: String) async {
+        await glue?.sendCtrl(.detachSession(sid: sid))
+    }
+
+    func kill(sid: String) async {
+        await glue?.sendCtrl(.killSession(sid: sid))
+    }
+
+    func sendInput(sid: String, text: String) async {
+        await glue?.sendCtrl(.input(sid: sid, payload: .text(data: text)))
+    }
+
+    func sendKey(sid: String, key: InputKey) async {
+        await glue?.sendCtrl(.input(sid: sid, payload: .key(key: key)))
+    }
+
+    func resize(sid: String, cols: UInt16, rows: UInt16) async {
+        await glue?.sendCtrl(.resize(sid: sid, cols: cols, rows: rows))
+    }
+}
+
+// MARK: - TermSessionState
+
+struct TermSessionState: Equatable {
+    var revision: UInt64
+    var cols: UInt16
+    var rows: UInt16
+    var cursorRow: UInt16
+    var cursorCol: UInt16
+    var cursorVisible: Bool
+    var title: String?
+    var lines: [TerminalLine]
+    var history: [String]
+}
+
+// MARK: - Default launchers
+
+extension SessionStore {
+    static let defaultLaunchers: [(id: String, label: String)] = [
+        ("zsh",         "Zsh shell"),
+        ("claude-code", "Claude Code"),
+        ("codex",       "Codex"),
+        ("npm-test",    "npm test"),
+        ("git-status",  "git status"),
+    ]
+}

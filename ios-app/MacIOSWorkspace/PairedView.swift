@@ -9,49 +9,58 @@ struct PairedView: View {
     @State var rtcGlue: RtcGlue?
     @State var hbAckCount: Int = 0
     @State var lastAckSecondsAgo: Int? = nil
+    @State private var sessionStore: SessionStore = SessionStore(glue: nil)
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "checkmark.seal.fill")
-                .resizable().scaledToFit().frame(maxWidth: 80).foregroundStyle(.green)
-            Text("已配对").font(.title.bold())
-            Text("pair_id: \(pair.pairId.prefix(8))…").font(.caption).foregroundStyle(.secondary)
+        NavigationStack {
+            VStack(spacing: 12) {
+                Image(systemName: "checkmark.seal.fill")
+                    .resizable().scaledToFit().frame(maxWidth: 80).foregroundStyle(.green)
+                Text("已配对").font(.title.bold())
+                Text("pair_id: \(pair.pairId.prefix(8))…").font(.caption).foregroundStyle(.secondary)
 
-            Button(action: { Task { await ping() } }) {
-                if pinging { ProgressView() } else { Text("发送 ping 测试") }
-            }
-            .buttonStyle(.bordered)
-            .disabled(pinging)
+                Button(action: { Task { await ping() } }) {
+                    if pinging { ProgressView() } else { Text("发送 ping 测试") }
+                }
+                .buttonStyle(.bordered)
+                .disabled(pinging)
 
-            if let r = pingResult { Text(r).font(.caption.monospaced()).multilineTextAlignment(.center) }
+                if let r = pingResult { Text(r).font(.caption.monospaced()).multilineTextAlignment(.center) }
 
-            Button("撤销并重新配对") { Task { await store.revoke() } }.buttonStyle(.bordered).tint(.red)
+                Button("撤销并重新配对") { Task { await store.revoke() } }.buttonStyle(.bordered).tint(.red)
 
-            Divider()
+                Divider()
 
-            Button(action: { Task { await connectRtc() } }) {
-                Text("Connect (M2)")
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(rtcState == .connected)
+                Button(action: { Task { await connectRtc() } }) {
+                    Text("Connect (M2)")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(rtcState == .connected)
 
-            Text("RTC: \(String(describing: rtcState))")
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-
-            if rtcState == .connected {
-                let lastAckText = lastAckSecondsAgo.map { "\($0)s ago" } ?? "—"
-                Text("Heartbeat: ack=\(hbAckCount)  last=\(lastAckText)")
+                Text("RTC: \(String(describing: rtcState))")
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
+
+                if rtcState == .connected {
+                    let lastAckText = lastAckSecondsAgo.map { "\($0)s ago" } ?? "—"
+                    Text("Heartbeat: ack=\(hbAckCount)  last=\(lastAckText)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+
+                    NavigationLink(destination: SessionListView(store: sessionStore)) {
+                        Label("会话", systemImage: "terminal")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
             }
+            .padding()
         }
-        .padding()
     }
 
     private func connectRtc() async {
         let glue = RtcGlue(pair: pair)
         rtcGlue = glue
+        sessionStore = SessionStore(glue: glue)
         Task {
             for await s in glue.states() {
                 rtcState = s
@@ -69,6 +78,7 @@ struct PairedView: View {
                 }
             }
         }
+        Task { await sessionStore.bind() }
         await glue.run()
     }
 
