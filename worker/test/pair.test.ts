@@ -18,7 +18,7 @@ describe("POST /pair/create", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(typeof body.pair_token).toBe("string");
-    expect(body.pair_token).toMatch(/^[A-Z2-9]{6}$/);
+    expect(body.pair_token).toMatch(/^[A-HJ-NP-Z2-9]{6}$/);
     expect(typeof body.room_id).toBe("string");
     expect(body.room_id).toMatch(/^[a-f0-9-]{36}$/);
     expect(typeof body.mac_device_secret).toBe("string");
@@ -38,6 +38,7 @@ describe("POST /pair/create", () => {
       body: "{}",
     });
     expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("invalid_mac_pubkey");
   });
 
   it("400 on invalid mac_pubkey base64", async () => {
@@ -47,5 +48,17 @@ describe("POST /pair/create", () => {
       body: JSON.stringify({ mac_pubkey: "not!base64" }),
     });
     expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("invalid_mac_pubkey");
+  });
+
+  it("400 on malformed JSON body with error=invalid_json", async () => {
+    const res = await SELF.fetch("https://example.com/pair/create", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "not json{",
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("invalid_json");
   });
 });

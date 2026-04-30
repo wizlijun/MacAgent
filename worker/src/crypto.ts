@@ -33,7 +33,7 @@ export function genPairToken(): string {
 
 export async function hmacSha256(secret: Uint8Array, msg: string): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
-    "raw", secret, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"],
+    "raw", secret, { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
   );
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(msg));
   return new Uint8Array(sig);
