@@ -2,14 +2,14 @@ import SwiftUI
 
 struct SessionListView: View {
     @Bindable var store: SessionStore
+    @State private var presentedSid: String?
+    @State private var rejectedReqId: String?
 
     var body: some View {
         List {
             Section("启动新会话") {
                 ForEach(SessionStore.defaultLaunchers, id: \.id) { item in
-                    Button(item.label) {
-                        Task { await store.launch(launcherId: item.id) }
-                    }
+                    LauncherRow(store: store, item: item)
                 }
             }
             Section("活动会话") {
@@ -30,6 +30,64 @@ struct SessionListView: View {
             }
         }
         .navigationTitle("会话")
+        .navigationDestination(item: $presentedSid) { sid in
+            SessionDetailView(store: store, sid: sid)
+        }
+        .onChange(of: store.pendingLaunchVersion) { _, _ in
+            for launch in store.pendingLaunches.values {
+                if case .succeeded(let sid) = launch.status, presentedSid != sid {
+                    presentedSid = sid
+                    return
+                }
+                if case .rejected = launch.status, rejectedReqId == nil {
+                    rejectedReqId = launch.id
+                }
+            }
+        }
+        .alert("启动失败", isPresented: rejectAlertBinding) {
+            Button("OK") {
+                if let rid = rejectedReqId {
+                    store.clearPendingLaunch(reqId: rid)
+                    rejectedReqId = nil
+                }
+            }
+        } message: {
+            if let rid = rejectedReqId, let p = store.pendingLaunches[rid],
+               case .rejected(let code, let reason) = p.status {
+                Text("\(code): \(reason)")
+            }
+        }
+    }
+
+    private var rejectAlertBinding: Binding<Bool> {
+        Binding(
+            get: { rejectedReqId != nil },
+            set: { if !$0 { rejectedReqId = nil } }
+        )
+    }
+}
+
+private struct LauncherRow: View {
+    @Bindable var store: SessionStore
+    let item: (id: String, label: String)
+
+    private var isRunning: Bool {
+        store.pendingLaunches.values.contains {
+            $0.launcherId == item.id && { if case .running = $0.status { return true } else { return false } }($0)
+        }
+    }
+
+    var body: some View {
+        Button(action: { Task { _ = await store.launch(launcherId: item.id) } }) {
+            HStack {
+                Text(item.label)
+                Spacer()
+                if isRunning {
+                    ProgressView().controlSize(.small)
+                }
+            }
+        }
+        .disabled(isRunning)
     }
 }
 
@@ -69,6 +127,9 @@ struct SessionDetailView: View {
         .navigationTitle(sessionLabel)
         .task {
             await store.attach(sid: sid)
+        }
+        .onChange(of: store.connectedTick) { _, _ in
+            Task { await store.attach(sid: sid) }
         }
         .onDisappear {
             Task { await store.detach(sid: sid) }

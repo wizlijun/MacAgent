@@ -1,11 +1,25 @@
 import Foundation
 import Observation
 
+// MARK: - PendingLaunch
+
+struct PendingLaunch: Identifiable {
+    let id: String          // reqId
+    let launcherId: String
+    var status: Status
+    var settledAt: Date?    // set when succeeded or rejected (for pruning)
+
+    enum Status { case running, succeeded(sid: String), rejected(code: String, reason: String) }
+}
+
 @MainActor
 @Observable
 final class SessionStore {
     private(set) var sessions: [SessionInfo] = []
     private(set) var sessionStates: [String: TermSessionState] = [:]
+    private(set) var pendingLaunches: [String: PendingLaunch] = [:]
+    private(set) var pendingLaunchVersion: Int = 0   // bumped on every mutation
+    private(set) var connectedTick: Int = 0
 
     private let glue: RtcGlue?
 
@@ -17,6 +31,14 @@ final class SessionStore {
         guard let glue else { return }
         for await payload in await glue.ctrlMessages() {
             handle(payload)
+        }
+    }
+
+    func onGlueConnected() async {
+        connectedTick &+= 1
+        guard let glue else { return }
+        for s in sessions {
+            await glue.sendCtrl(.attachSession(sid: s.sid))
         }
     }
 
@@ -93,16 +115,44 @@ final class SessionStore {
                 sessionStates[sid] = st
             }
 
+        case .launchAck(let reqId, let sid):
+            pendingLaunches[reqId]?.status = .succeeded(sid: sid)
+            pendingLaunches[reqId]?.settledAt = Date()
+            pendingLaunchVersion &+= 1
+            schedulePrune(reqId: reqId)
+
+        case .launchReject(let reqId, let code, let reason):
+            pendingLaunches[reqId]?.status = .rejected(code: code, reason: reason)
+            pendingLaunches[reqId]?.settledAt = Date()
+            pendingLaunchVersion &+= 1
+
         default:
             break
         }
     }
 
+    func clearPendingLaunch(reqId: String) {
+        pendingLaunches.removeValue(forKey: reqId)
+        pendingLaunchVersion &+= 1
+    }
+
+    private func schedulePrune(reqId: String) {
+        Task {
+            try? await Task.sleep(nanoseconds: 10_000_000_000) // 10 s
+            pendingLaunches.removeValue(forKey: reqId)
+            pendingLaunchVersion &+= 1
+        }
+    }
+
     // MARK: - Outbound
 
-    func launch(launcherId: String) async {
+    @discardableResult
+    func launch(launcherId: String) async -> String {
         let reqId = UUID().uuidString
+        pendingLaunches[reqId] = PendingLaunch(id: reqId, launcherId: launcherId, status: .running, settledAt: nil)
+        pendingLaunchVersion &+= 1
         await glue?.sendCtrl(.launchSession(reqId: reqId, launcherId: launcherId, cwdOverride: nil))
+        return reqId
     }
 
     func attach(sid: String) async {

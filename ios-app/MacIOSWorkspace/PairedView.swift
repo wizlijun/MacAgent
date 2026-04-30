@@ -64,6 +64,9 @@ struct PairedView: View {
         Task {
             for await s in glue.states() {
                 rtcState = s
+                if case .connected = s {
+                    await sessionStore.onGlueConnected()
+                }
             }
         }
         // Poll heartbeat stats every 5 s
