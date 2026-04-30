@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { handlePairCreate, handlePairClaim, handlePairEvent } from "./pair";
+import { handlePairCreate, handlePairClaim, handlePairEvent, handlePairRevoke } from "./pair";
 
 export type { Env } from "./env";
 export { SignalingRoom } from "./signaling";
@@ -18,6 +18,10 @@ export default {
 
     if (url.pathname === "/pair/claim" && request.method === "POST") {
       return handlePairClaim(request, env);
+    }
+
+    if (url.pathname === "/pair/revoke" && request.method === "POST") {
+      return handlePairRevoke(request, env);
     }
 
     if (url.pathname.startsWith("/pair/event/") && request.method === "GET") {

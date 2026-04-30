@@ -1,6 +1,6 @@
 import type { Env } from "./env";
-import { genDeviceSecret, genPairToken, isValidX25519PubB64 } from "./crypto";
-import { putPairToken, getPairToken, deletePairToken, putPair } from "./kv";
+import { genDeviceSecret, genPairToken, isValidX25519PubB64, hmacVerify, b64decode } from "./crypto";
+import { putPairToken, getPairToken, deletePairToken, putPair, getPair, markRevoked } from "./kv";
 
 export async function handlePairCreate(req: Request, env: Env): Promise<Response> {
   let body: { mac_pubkey?: string };
@@ -68,6 +68,31 @@ export async function handlePairClaim(req: Request, env: Env): Promise<Response>
   );
 
   return Response.json({ pair_id, mac_pubkey: tokRec.mac_pubkey_b64, ios_device_secret });
+}
+
+export async function handlePairRevoke(req: Request, env: Env): Promise<Response> {
+  let body: { pair_id?: string; ts?: number; sig?: string };
+  try { body = await req.json(); } catch { return Response.json({ error: "invalid_json" }, { status: 400 }); }
+  if (!body.pair_id || typeof body.ts !== "number" || !body.sig) {
+    return Response.json({ error: "missing_fields" }, { status: 400 });
+  }
+  if (Math.abs(Date.now() - body.ts) > 60_000) {
+    return Response.json({ error: "ts_out_of_range" }, { status: 400 });
+  }
+  const pair = await getPair(env, body.pair_id);
+  if (!pair) {
+    return Response.json({ error: "unknown_pair" }, { status: 404 });
+  }
+  const msg = `revoke|${body.pair_id}|${body.ts}`;
+  const sigBytes = b64decode(body.sig);
+  const macOk = await hmacVerify(b64decode(pair.mac_device_secret_b64), msg, sigBytes);
+  const iosOk = !macOk && await hmacVerify(b64decode(pair.ios_device_secret_b64), msg, sigBytes);
+  if (!macOk && !iosOk) {
+    return Response.json({ error: "bad_sig" }, { status: 401 });
+  }
+  await markRevoked(env, body.pair_id, "client_initiated");
+  await env.PAIRS.delete(`pair:${body.pair_id}`);
+  return Response.json({ revoked: true });
 }
 
 export async function handlePairEvent(req: Request, env: Env, room_id: string): Promise<Response> {
