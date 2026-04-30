@@ -1,73 +1,59 @@
-//! macagent menu-bar entry point.
+//! macagent entry point.
 //!
-//! M0：仅在 macOS 菜单栏显示图标 + Quit 菜单项；不打开任何窗口。
-//! M1 起替换为完整的 egui 菜单栏 / 设置 UI。
+//! M1.6: eframe普通窗口 + 配对状态机（NotPaired / Pairing / Paired）。
+//! 菜单栏图标推迟到后续里程碑。
 
-use anyhow::{Context, Result};
-use tao::event::Event;
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
-use tray_icon::{TrayIcon, TrayIconBuilder};
+mod keychain;
+mod pair_qr;
+mod ui;
 
-#[derive(Debug)]
-enum UserEvent {
-    MenuEvent(MenuEvent),
-}
-
-fn load_icon() -> Result<tray_icon::Icon> {
-    let bytes = include_bytes!("../assets/tray-icon.png");
-    let img = image::load_from_memory(bytes)
-        .context("decode tray-icon.png")?
-        .into_rgba8();
-    let (w, h) = img.dimensions();
-    tray_icon::Icon::from_rgba(img.into_raw(), w, h).context("build tray icon from rgba")
-}
-
-fn build_tray() -> Result<(TrayIcon, MenuItem)> {
-    let menu = Menu::new();
-    let quit_item = MenuItem::new("Quit macagent", true, None);
-    menu.append(&quit_item).context("append Quit menu item")?;
-
-    let icon = load_icon()?;
-    let tray = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_icon(icon)
-        .with_tooltip(format!("macagent v{}", macagent_core::version()))
-        .build()
-        .context("build tray icon")?;
-
-    Ok((tray, quit_item))
-}
+use anyhow::Result;
 
 fn main() -> Result<()> {
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    // Build a Tokio runtime for reqwest async tasks.
+    let rt = tokio::runtime::Runtime::new()?;
+    let handle = rt.handle().clone();
 
-    // 在事件循环跑起来之前装载托盘
-    // _tray 必须保持 alive 直到事件循环结束——drop 会立即销毁系统托盘图标。
-    // 用 _tray 而非 _ 是为了 keep ownership 而非 drop-immediately。
-    let (_tray, quit_item) = build_tray()?;
-    let quit_id = quit_item.id().clone();
+    // Keep the runtime alive for the duration of the eframe event loop.
+    // eframe::run_native takes ownership of the App, so we move `rt` into a
+    // wrapper that drops it after the event loop exits.
+    let app = ui::MacAgentApp::new(handle)?;
 
-    // 让 tray-icon 的菜单事件转发到 tao 的 user event 通道
-    let proxy = event_loop.create_proxy();
-    MenuEvent::set_event_handler(Some(move |evt| {
-        let _ = proxy.send_event(UserEvent::MenuEvent(evt));
-    }));
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("macagent")
+            .with_inner_size([400.0, 300.0])
+            .with_resizable(false),
+        ..Default::default()
+    };
 
-    eprintln!(
-        "macagent v{} started; tray icon should be visible",
-        macagent_core::version()
-    );
+    // eframe::run_native only returns on error (it calls std::process::exit on normal quit).
+    eframe::run_native(
+        "macagent",
+        native_options,
+        Box::new(move |_cc| {
+            // Wrap in a holder that keeps the Tokio runtime alive.
+            Ok(Box::new(RuntimeHolder { rt, app }))
+        }),
+    )
+    .map_err(|e| anyhow::anyhow!("eframe error: {}", e))
+}
 
-    event_loop.run(move |event, _window_target, control_flow| {
-        // 菜单栏常驻进程：事件来才唤醒，零 CPU 开销
-        *control_flow = ControlFlow::Wait;
+/// Wraps the app + tokio runtime so the runtime stays alive until the window closes.
+struct RuntimeHolder {
+    // Must remain alive so spawned tasks can continue running.
+    #[allow(dead_code)]
+    rt: tokio::runtime::Runtime,
+    app: ui::MacAgentApp,
+}
 
-        if let Event::UserEvent(UserEvent::MenuEvent(evt)) = event {
-            if evt.id == quit_id {
-                eprintln!("Quit requested");
-                *control_flow = ControlFlow::Exit;
-            }
-        }
-    });
+impl eframe::App for RuntimeHolder {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.app.update(ctx, frame);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Shutdown the runtime cleanly when the window closes.
+        // `rt` is dropped when RuntimeHolder is dropped; this is implicit.
+    }
 }
