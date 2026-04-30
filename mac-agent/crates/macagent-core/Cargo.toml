@@ -17,6 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
 tokio = { workspace = true }
+alacritty_terminal = { workspace = true }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 urlencoding = "2.1"
