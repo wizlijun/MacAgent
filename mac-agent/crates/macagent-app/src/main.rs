@@ -1,6 +1,7 @@
 //! macagent entry point — clap subcommand dispatch.
 
 mod agent_socket;
+mod clipboard_bridge;
 mod keychain;
 mod launcher;
 mod pair_qr;

@@ -217,6 +217,29 @@ pub enum CtrlPayload {
         cols: u16,
         rows: u16,
     },
+
+    // M4: clipboard
+    ClipboardSet {
+        source: ClipSource,
+        content: ClipContent,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Clipboard types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ClipSource {
+    Mac,
+    Ios,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ClipContent {
+    Text { data: String },
 }
 
 // ---------------------------------------------------------------------------

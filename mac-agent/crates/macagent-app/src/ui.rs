@@ -12,6 +12,7 @@ use macagent_core::pair_auth::{PairAuth, PairRecord, PairToken, X25519Pub};
 use tokio::sync::mpsc as async_mpsc;
 
 use crate::agent_socket::AgentSocket;
+use crate::clipboard_bridge::ClipboardBridge;
 use crate::launcher::LauncherConfig;
 use crate::producer_registry::ProducerRegistry;
 use crate::rtc_glue::{run_glue, GlueConfig, GlueState};
@@ -133,10 +134,21 @@ impl MacAgentApp {
                 .block_on(crate::launcher::load_or_init())
                 .unwrap_or_else(|_| LauncherConfig::default_config()),
         );
+
+        // ClipboardBridge: polls NSPasteboard every 500ms and forwards changes to iOS.
+        let clipboard_bridge = std::sync::Arc::new(ClipboardBridge::new(ctrl_send_tx.clone()));
+        {
+            let bridge = std::sync::Arc::clone(&clipboard_bridge);
+            runtime.spawn(async move {
+                bridge.run_polling().await;
+            });
+        }
+
         let router = std::sync::Arc::new(SessionRouter::new(
             std::sync::Arc::clone(&registry),
             ctrl_send_tx.clone(),
             std::sync::Arc::clone(&launcher_config),
+            clipboard_bridge,
         ));
 
         // Start AgentSocket and wire socket events → router

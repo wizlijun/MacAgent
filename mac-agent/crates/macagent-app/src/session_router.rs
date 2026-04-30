@@ -7,10 +7,11 @@
 //! - socket disconnect → SessionRemoved { reason: "window_closed" }
 
 use crate::agent_socket::ProducerEvent;
+use crate::clipboard_bridge::ClipboardBridge;
 use crate::launcher::{launch_in_terminal, LauncherConfig};
 use crate::producer_registry::ProducerRegistry;
 use anyhow::Result;
-use macagent_core::ctrl_msg::{CtrlPayload, SessionInfo, SessionSource};
+use macagent_core::ctrl_msg::{ClipSource, CtrlPayload, SessionInfo, SessionSource};
 use macagent_core::socket_proto::{A2P, P2A};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -50,6 +51,7 @@ pub struct SessionRouter {
     /// channel to push CtrlPayload out to iOS via rtc_glue
     ctrl_tx: mpsc::UnboundedSender<CtrlPayload>,
     launcher_config: Arc<LauncherConfig>,
+    clipboard_bridge: Arc<ClipboardBridge>,
 }
 
 impl SessionRouter {
@@ -57,12 +59,14 @@ impl SessionRouter {
         registry: Arc<ProducerRegistry>,
         ctrl_tx: mpsc::UnboundedSender<CtrlPayload>,
         launcher_config: Arc<LauncherConfig>,
+        clipboard_bridge: Arc<ClipboardBridge>,
     ) -> Self {
         Self {
             registry,
             pending: Arc::new(Mutex::new(HashMap::new())),
             ctrl_tx,
             launcher_config,
+            clipboard_bridge,
         }
     }
 
@@ -106,6 +110,19 @@ impl SessionRouter {
                     .registry
                     .send_to(&sid, A2P::Resize { cols, rows })
                     .await;
+            }
+            CtrlPayload::ClipboardSet {
+                source: ClipSource::Ios,
+                content,
+            } => {
+                self.clipboard_bridge.write_remote(&content);
+            }
+            CtrlPayload::ClipboardSet {
+                source: ClipSource::Mac,
+                ..
+            } => {
+                // Mac→iOS direction is produced by ClipboardBridge itself; ignore if echoed back.
+                eprintln!("warn: received ClipboardSet from iOS with source=Mac, ignored");
             }
             _ => {
                 // Other variants (Heartbeat, Ping, etc.) are handled by rtc_glue.
@@ -433,11 +450,21 @@ mod tests {
         Arc::new(LauncherConfig::default_config())
     }
 
+    fn make_bridge() -> Arc<ClipboardBridge> {
+        let (tx, _rx) = mpsc::unbounded_channel::<CtrlPayload>();
+        Arc::new(ClipboardBridge::new(tx))
+    }
+
     #[tokio::test]
     async fn handle_attach_calls_send_to_registry() {
         let registry = make_registry();
         let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<CtrlPayload>();
-        let router = SessionRouter::new(Arc::clone(&registry), ctrl_tx, make_launcher_config());
+        let router = SessionRouter::new(
+            Arc::clone(&registry),
+            ctrl_tx,
+            make_launcher_config(),
+            make_bridge(),
+        );
 
         // Register a fake producer
         let (a2p_tx, mut a2p_rx) = mpsc::unbounded_channel::<A2P>();
@@ -479,6 +506,7 @@ mod tests {
             Arc::clone(&registry),
             ctrl_tx,
             make_launcher_config(),
+            make_bridge(),
         ));
 
         // Manually inject a pending launch (bypassing AppleScript)
@@ -537,7 +565,12 @@ mod tests {
     async fn launch_session_rejects_unknown_launcher() {
         let registry = make_registry();
         let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<CtrlPayload>();
-        let router = SessionRouter::new(Arc::clone(&registry), ctrl_tx, make_launcher_config());
+        let router = SessionRouter::new(
+            Arc::clone(&registry),
+            ctrl_tx,
+            make_launcher_config(),
+            make_bridge(),
+        );
 
         router
             .handle_ctrl_from_ios(CtrlPayload::LaunchSession {

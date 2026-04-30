@@ -167,6 +167,68 @@ enum SessionSource: Codable, Equatable {
 }
 
 // ---------------------------------------------------------------------------
+// Clipboard types (M4)
+// ---------------------------------------------------------------------------
+
+enum ClipSource: Codable, Equatable {
+    case mac
+    case ios
+
+    private enum CodingKeys: String, CodingKey { case kind }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try c.decode(String.self, forKey: .kind)
+        switch kind {
+        case "mac": self = .mac
+        case "ios": self = .ios
+        default:
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "unknown ClipSource kind \(kind)"
+            ))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .mac: try c.encode("mac", forKey: .kind)
+        case .ios: try c.encode("ios", forKey: .kind)
+        }
+    }
+}
+
+enum ClipContent: Codable, Equatable {
+    case text(data: String)
+
+    private enum CodingKeys: String, CodingKey { case kind, data }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try c.decode(String.self, forKey: .kind)
+        switch kind {
+        case "text":
+            self = .text(data: try c.decode(String.self, forKey: .data))
+        default:
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "unknown ClipContent kind \(kind)"
+            ))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text(let data):
+            try c.encode("text", forKey: .kind)
+            try c.encode(data, forKey: .data)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CtrlPayload
 // ---------------------------------------------------------------------------
 
@@ -204,6 +266,9 @@ enum CtrlPayload: Codable, Equatable {
     case input(sid: String, payload: TerminalInput)
     case resize(sid: String, cols: UInt16, rows: UInt16)
 
+    // M4: clipboard
+    case clipboardSet(source: ClipSource, content: ClipContent)
+
     // MARK: - Coding keys
 
     private enum CodingKeys: String, CodingKey {
@@ -213,6 +278,7 @@ enum CtrlPayload: Codable, Equatable {
         case exit_status, session, sessions
         case revision, cols, rows, cursor_row, cursor_col, cursor_visible, title, lines
         case payload
+        case source, content
     }
 
     // MARK: - canonical bytes
@@ -298,6 +364,13 @@ enum CtrlPayload: Codable, Equatable {
             return try CanonicalJSON.encode(["type": "input", "sid": sid, "payload": payloadObj])
         case .resize(let sid, let cols, let rows):
             return try CanonicalJSON.encode(["type": "resize", "sid": sid, "cols": cols, "rows": rows])
+        case .clipboardSet(let source, let content):
+            let encoder = JSONEncoder()
+            let sourceData = try encoder.encode(source)
+            let sourceObj = try JSONSerialization.jsonObject(with: sourceData)
+            let contentData = try encoder.encode(content)
+            let contentObj = try JSONSerialization.jsonObject(with: contentData)
+            return try CanonicalJSON.encode(["type": "clipboard_set", "source": sourceObj, "content": contentObj])
         }
     }
 
@@ -385,6 +458,10 @@ enum CtrlPayload: Codable, Equatable {
             try c.encode("resize", forKey: .type)
             try c.encode(sid, forKey: .sid)
             try c.encode(cols, forKey: .cols); try c.encode(rows, forKey: .rows)
+        case .clipboardSet(let source, let content):
+            try c.encode("clipboard_set", forKey: .type)
+            try c.encode(source, forKey: .source)
+            try c.encode(content, forKey: .content)
         }
     }
 
@@ -487,6 +564,11 @@ enum CtrlPayload: Codable, Equatable {
             self = .resize(sid: try c.decode(String.self, forKey: .sid),
                            cols: try c.decode(UInt16.self, forKey: .cols),
                            rows: try c.decode(UInt16.self, forKey: .rows))
+        case "clipboard_set":
+            self = .clipboardSet(
+                source: try c.decode(ClipSource.self, forKey: .source),
+                content: try c.decode(ClipContent.self, forKey: .content)
+            )
 
         default:
             throw DecodingError.dataCorrupted(.init(
