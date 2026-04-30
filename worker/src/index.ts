@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
-import { handlePairCreate } from "./pair";
+import { handlePairCreate, handlePairClaim } from "./pair";
 
 export type { Env } from "./env";
 
@@ -14,6 +14,10 @@ export default {
 
     if (url.pathname === "/pair/create" && request.method === "POST") {
       return handlePairCreate(request, env);
+    }
+
+    if (url.pathname === "/pair/claim" && request.method === "POST") {
+      return handlePairClaim(request, env);
     }
 
     return new Response("not found", { status: 404 });

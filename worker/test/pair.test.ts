@@ -1,6 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it, beforeEach } from "vitest";
-import { mac_pub_b64 } from "./helpers";
+import { mac_pub_b64, ios_pub_b64 } from "./helpers";
 
 describe("POST /pair/create", () => {
   beforeEach(async () => {
@@ -60,5 +60,58 @@ describe("POST /pair/create", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBe("invalid_json");
+  });
+});
+
+describe("POST /pair/claim", () => {
+  it("returns pair_id, mac_pubkey, ios_device_secret on valid token", async () => {
+    const mac_pub = mac_pub_b64();
+    const ios_pub = ios_pub_b64();
+    const create = await SELF.fetch("https://example.com/pair/create", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mac_pubkey: mac_pub }),
+    });
+    const { pair_token } = await create.json();
+
+    const res = await SELF.fetch("https://example.com/pair/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair_token, ios_pubkey: ios_pub }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.pair_id).toMatch(/^[a-f0-9-]{36}$/);
+    expect(body.mac_pubkey).toBe(mac_pub);
+    expect(typeof body.ios_device_secret).toBe("string");
+
+    const tokRec = await env.PAIRS.get(`pair_token:${pair_token}`);
+    expect(tokRec).toBeNull();
+    const pairRec = await env.PAIRS.get(`pair:${body.pair_id}`, "json");
+    expect(pairRec).toMatchObject({ mac_pubkey_b64: mac_pub, ios_pubkey_b64: ios_pub });
+  });
+
+  it("404 on unknown pair_token", async () => {
+    const res = await SELF.fetch("https://example.com/pair/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair_token: "ZZZZZZ", ios_pubkey: ios_pub_b64() }),
+    });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe("unknown_or_expired_token");
+  });
+
+  it("400 on invalid ios_pubkey", async () => {
+    const create = await SELF.fetch("https://example.com/pair/create", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mac_pubkey: mac_pub_b64() }),
+    });
+    const { pair_token } = await create.json();
+    const res = await SELF.fetch("https://example.com/pair/claim", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair_token, ios_pubkey: "not!base64" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("invalid_ios_pubkey");
   });
 });
