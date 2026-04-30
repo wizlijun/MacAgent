@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { handlePairCreate, handlePairClaim, handlePairEvent, handlePairRevoke } from "./pair";
 import { handleTurnCred } from "./turn";
+import { handlePush } from "./push";
 
 export type { Env } from "./env";
 export { SignalingRoom } from "./signaling";
@@ -32,6 +33,10 @@ export default {
     if (url.pathname.startsWith("/pair/event/") && request.method === "GET") {
       const room_id = url.pathname.slice("/pair/event/".length);
       return handlePairEvent(request, env, room_id);
+    }
+
+    if (url.pathname === "/push" && request.method === "POST") {
+      return handlePush(request, env);
     }
 
     if (url.pathname.startsWith("/signal/")) {

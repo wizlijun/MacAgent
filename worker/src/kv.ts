@@ -47,3 +47,15 @@ export async function markRevoked(env: Env, pair_id: string, reason: string): Pr
     { expirationTtl: 60 * 60 * 24 * 90 },
   );
 }
+
+export async function isApnsDead(env: Env, pair_id: string): Promise<boolean> {
+  return (await env.PAIRS.get(`apns_dead:${pair_id}`)) !== null;
+}
+
+export async function markApnsDead(env: Env, pair_id: string, reason: string): Promise<void> {
+  await env.PAIRS.put(
+    `apns_dead:${pair_id}`,
+    JSON.stringify({ reason, since: Date.now() }),
+    { expirationTtl: 60 * 60 * 24 * 90 },  // 90 days
+  );
+}

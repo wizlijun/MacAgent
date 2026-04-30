@@ -58,6 +58,10 @@ export async function handlePairClaim(req: Request, env: Env): Promise<Response>
     created_ts: Date.now(),
   });
 
+  if (body.ios_apns_token) {
+    await env.PAIRS.put(`apns_token:${pair_id}`, body.ios_apns_token);
+  }
+
   await deletePairToken(env, body.pair_token);
 
   // 通知正在 room_id 上等待的 Mac 端
