@@ -50,6 +50,8 @@ export async function handleTurnCred(req: Request, env: Env): Promise<Response> 
     },
   );
   if (!callsRes.ok) {
+    const errBody = await callsRes.text().catch(() => "<unreadable>");
+    console.log("[turn/cred] Calls API failed", callsRes.status, errBody.slice(0, 500));
     return Response.json({ error: "turn_unavailable", status: callsRes.status }, { status: 503 });
   }
   const cred = (await callsRes.json()) as CallsCredResp;
