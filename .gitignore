@@ -10,12 +10,13 @@ Thumbs.db
 # Rust
 mac-agent/target/
 **/*.rs.bk
+# Cargo.lock is intentionally tracked (binary crate in workspace)
 
 # Xcode
 ios-app/build/
 ios-app/DerivedData/
 ios-app/**/xcuserdata/
-*.xcworkspace/xcuserdata
+ios-app/*.xcworkspace/xcuserdata/
 *.xcuserstate
 
 # Node / Wrangler
