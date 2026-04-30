@@ -1,5 +1,6 @@
 import type { Env } from "./env";
 import { handlePairCreate, handlePairClaim, handlePairEvent, handlePairRevoke } from "./pair";
+import { handleTurnCred } from "./turn";
 
 export type { Env } from "./env";
 export { SignalingRoom } from "./signaling";
@@ -22,6 +23,10 @@ export default {
 
     if (url.pathname === "/pair/revoke" && request.method === "POST") {
       return handlePairRevoke(request, env);
+    }
+
+    if (url.pathname === "/turn/cred" && request.method === "POST") {
+      return handleTurnCred(request, env);
     }
 
     if (url.pathname.startsWith("/pair/event/") && request.method === "GET") {
