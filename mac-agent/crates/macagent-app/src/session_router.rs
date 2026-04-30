@@ -341,6 +341,9 @@ impl SessionRouter {
                     P2A::ProducerHello { .. } => {
                         // Should not arrive after initial handshake; ignore.
                     }
+                    P2A::NotifyRegister { .. } | P2A::NotifyComplete { .. } => {
+                        // Notify messages are not routed through session_router; ignore.
+                    }
                 }
             }
             // Channel closed without ProducerExit → treat as disconnect

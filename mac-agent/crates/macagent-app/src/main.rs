@@ -4,6 +4,7 @@ mod agent_socket;
 mod clipboard_bridge;
 mod keychain;
 mod launcher;
+mod notify;
 mod pair_qr;
 mod producer_registry;
 mod rtc_glue;
@@ -26,6 +27,8 @@ enum Command {
     Ui,
     /// Run as producer in current terminal
     Run(run::RunArgs),
+    /// Run a command and notify on completion
+    Notify(notify::NotifyArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -33,5 +36,9 @@ fn main() -> anyhow::Result<()> {
     match cli.command.unwrap_or(Command::Ui) {
         Command::Ui => ui::run_main(),
         Command::Run(args) => run::run_main(args),
+        Command::Notify(args) => {
+            let code = notify::run_main(args)?;
+            std::process::exit(code);
+        }
     }
 }

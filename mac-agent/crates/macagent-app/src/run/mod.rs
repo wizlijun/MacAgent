@@ -188,6 +188,9 @@ impl Producer {
                         A2P::ProducerWelcome { .. } => {
                             // Ignore duplicate welcome.
                         }
+                        A2P::NotifyAck { .. } => {
+                            // Not expected on a run session; ignore.
+                        }
                     }
                 }
 

@@ -49,6 +49,18 @@ pub enum P2A {
         exit_status: Option<i32>,
         reason: String,
     },
+    NotifyRegister {
+        register_id: String,
+        argv: Vec<String>,
+        started_at_ms: u64,
+        session_hint: Option<String>,
+        title: Option<String>,
+    },
+    NotifyComplete {
+        register_id: String,
+        exit_code: i32,
+        ended_at_ms: u64,
+    },
 }
 
 /// Messages from Agent → producer.
@@ -61,6 +73,7 @@ pub enum A2P {
     KillRequest { reason: String },
     AttachStart,
     AttachStop,
+    NotifyAck { register_id: String },
 }
 
 /// 4-byte BE length prefix frame codec.
@@ -121,6 +134,51 @@ mod tests {
             payload: TerminalInput::Key {
                 key: InputKey::CtrlC,
             },
+        };
+        let mut buf = codec::encode(&msg).unwrap();
+        let decoded: A2P = codec::try_decode(&mut buf).unwrap().unwrap();
+        assert!(buf.is_empty());
+        let json_orig = serde_json::to_string(&msg).unwrap();
+        let json_dec = serde_json::to_string(&decoded).unwrap();
+        assert_eq!(json_orig, json_dec);
+    }
+
+    #[test]
+    fn round_trip_p2a_notify_register() {
+        let msg = P2A::NotifyRegister {
+            register_id: "reg-001".to_string(),
+            argv: vec!["cargo".to_string(), "test".to_string()],
+            started_at_ms: 1_700_000_000_000,
+            session_hint: Some("sess-abc".to_string()),
+            title: Some("cargo test".to_string()),
+        };
+        let mut buf = codec::encode(&msg).unwrap();
+        let decoded: P2A = codec::try_decode(&mut buf).unwrap().unwrap();
+        assert!(buf.is_empty());
+        let json_orig = serde_json::to_string(&msg).unwrap();
+        let json_dec = serde_json::to_string(&decoded).unwrap();
+        assert_eq!(json_orig, json_dec);
+    }
+
+    #[test]
+    fn round_trip_p2a_notify_complete() {
+        let msg = P2A::NotifyComplete {
+            register_id: "reg-001".to_string(),
+            exit_code: 0,
+            ended_at_ms: 1_700_000_005_000,
+        };
+        let mut buf = codec::encode(&msg).unwrap();
+        let decoded: P2A = codec::try_decode(&mut buf).unwrap().unwrap();
+        assert!(buf.is_empty());
+        let json_orig = serde_json::to_string(&msg).unwrap();
+        let json_dec = serde_json::to_string(&decoded).unwrap();
+        assert_eq!(json_orig, json_dec);
+    }
+
+    #[test]
+    fn round_trip_a2p_notify_ack() {
+        let msg = A2P::NotifyAck {
+            register_id: "reg-001".to_string(),
         };
         let mut buf = codec::encode(&msg).unwrap();
         let decoded: A2P = codec::try_decode(&mut buf).unwrap().unwrap();
