@@ -1829,7 +1829,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "uuid",
  "webrtc",
 ]
 
@@ -1839,18 +1838,14 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "bytes",
  "futures-util",
  "hmac",
  "rand 0.8.6",
- "security-framework",
  "serde",
  "serde_json",
  "sha2",
- "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite",
- "url",
  "urlencoding",
  "webrtc",
  "x25519-dalek",
