@@ -1,0 +1,44 @@
+name: Swift (iOS App)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ios-app/**"
+      - ".github/workflows/swift.yml"
+  pull_request:
+    paths:
+      - "ios-app/**"
+      - ".github/workflows/swift.yml"
+
+jobs:
+  test:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: List available simulators
+        run: xcrun simctl list devices available
+
+      - name: Test
+        run: |
+          # 选第一台可用的 iPhone simulator
+          SIM_NAME=$(xcrun simctl list devices available | grep -E "iPhone 1[5-9]|iPhone 2[0-9]" | head -n 1 | sed -E 's/.*    ([^(]+) \(.*$/\1/' | xargs)
+          if [ -z "$SIM_NAME" ]; then
+            echo "no iPhone simulator found"; exit 1
+          fi
+          echo "Using simulator: $SIM_NAME"
+          xcodebuild test \
+            -project MacIOSWorkspace.xcodeproj \
+            -scheme MacIOSWorkspace \
+            -destination "platform=iOS Simulator,name=$SIM_NAME" \
+            -quiet
