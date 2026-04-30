@@ -28,6 +28,9 @@ security-framework = "3.0"
 qrcode = "0.14"
 webrtc = "0.11"
 alacritty_terminal = "0.25.1"
+portable-pty = "0.9"
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
 
 [profile.dev]
 opt-level = 0

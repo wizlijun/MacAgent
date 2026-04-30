@@ -437,6 +437,38 @@ async fn worker_revoke(
     Ok(())
 }
 
+/// Run the menu bar UI. Blocks until the window is closed.
+pub fn run_main() -> anyhow::Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    let handle = rt.handle().clone();
+    let app = MacAgentApp::new(handle)?;
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("macagent")
+            .with_inner_size([400.0, 300.0])
+            .with_resizable(false),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "macagent",
+        native_options,
+        Box::new(move |_cc| Ok(Box::new(UiHolder { rt, app }))),
+    )
+    .map_err(|e| anyhow::anyhow!("eframe error: {}", e))
+}
+
+struct UiHolder {
+    #[allow(dead_code)]
+    rt: tokio::runtime::Runtime,
+    app: MacAgentApp,
+}
+
+impl eframe::App for UiHolder {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.app.update(ctx, frame);
+    }
+}
+
 // ── eframe App impl ─────────────────────────────────────────────────────────
 
 impl eframe::App for MacAgentApp {
