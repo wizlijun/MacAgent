@@ -4,6 +4,7 @@ export default defineWorkersConfig({
   test: {
     poolOptions: {
       workers: {
+        singleFork: true,
         wrangler: { configPath: "./wrangler.toml" },
       },
     },
