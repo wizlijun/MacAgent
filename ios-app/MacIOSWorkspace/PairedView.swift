@@ -7,6 +7,8 @@ struct PairedView: View {
     @State var pinging = false
     @State var rtcState: GlueState = .idle
     @State var rtcGlue: RtcGlue?
+    @State var hbAckCount: Int = 0
+    @State var lastAckSecondsAgo: Int? = nil
 
     var body: some View {
         VStack(spacing: 12) {
@@ -36,6 +38,13 @@ struct PairedView: View {
             Text("RTC: \(String(describing: rtcState))")
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
+
+            if rtcState == .connected {
+                let lastAckText = lastAckSecondsAgo.map { "\($0)s ago" } ?? "—"
+                Text("Heartbeat: ack=\(hbAckCount)  last=\(lastAckText)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding()
     }
@@ -46,6 +55,18 @@ struct PairedView: View {
         Task {
             for await s in glue.states() {
                 rtcState = s
+            }
+        }
+        // Poll heartbeat stats every 5 s
+        Task {
+            while true {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard let g = rtcGlue else { break }
+                let (_, acked, _, lastAck) = await g.heartbeatStats()
+                hbAckCount = acked
+                if let d = lastAck {
+                    lastAckSecondsAgo = Int(Date().timeIntervalSince(d))
+                }
             }
         }
         await glue.run()

@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 pub enum CtrlPayload {
     Ping { ts: u64, nonce: String },
     Pong { ts: u64, nonce: String },
+    Heartbeat { ts: u64, nonce: String },
+    HeartbeatAck { ts: u64, nonce: String },
     Error { code: String, msg: String },
 }
 

@@ -8,6 +8,11 @@ actor RtcGlue {
     private var ws: SignalingClient?
     private var stateContinuation: AsyncStream<GlueState>.Continuation?
 
+    // Heartbeat state (iOS is answerer; Mac sends hb, iOS sends hb_ack)
+    private var hbAckCount: Int = 0
+    private var lastAckDate: Date? = nil
+    private var sharedSecret: Data? = nil
+
     init(pair: PairStore.PairedPair) {
         self.pair = pair
     }
@@ -26,6 +31,10 @@ actor RtcGlue {
         stateContinuation?.yield(s)
     }
 
+    func heartbeatStats() -> (sent: Int, acked: Int, missed: Int, lastAck: Date?) {
+        (0, hbAckCount, 0, lastAckDate)
+    }
+
     func run() async {
         emit(.fetchingTurn)
         guard let ice = await fetchTurnCred() else { emit(.failed); return }
@@ -36,6 +45,13 @@ actor RtcGlue {
         }
         self.ws = ws
         emit(.signalingConnected)
+
+        // Derive shared_secret for ctrl HMAC
+        if let priv = (try? Keychain.get("ios.local.privkey")) ?? nil,
+           let keys = try? PairKeys.from(privateKeyData: priv),
+           let ss = try? keys.deriveSharedSecret(peerPubB64: pair.peerPubB64) {
+            self.sharedSecret = ss
+        }
 
         let rtc = RtcClient(iceServers: ice)
         self.rtc = rtc
@@ -53,7 +69,14 @@ actor RtcGlue {
         // Forward peer state changes to glue state
         Task {
             for await state in rtc.peerStates() {
-                self.handleState(state)
+                await self.handleState(state)
+            }
+        }
+
+        // ctrl channel recv loop — handle hb/hb_ack
+        Task {
+            for await msg in rtc.ctrlMessages() {
+                await self.handleCtrlMessage(msg)
             }
         }
 
@@ -96,6 +119,41 @@ actor RtcGlue {
         }
     }
 
+    private func handleState(_ s: RtcClient.PeerState) {
+        switch s {
+        case .connected: emit(.connected)
+        case .failed, .closed: emit(.failed)
+        default: emit(.negotiating)
+        }
+    }
+
+    private func handleCtrlMessage(_ msg: String) {
+        guard let ss = sharedSecret else { return }
+        guard let data = msg.data(using: .utf8),
+              let signed = try? JSONDecoder().decode(SignedCtrl.self, from: data),
+              (try? signed.verify(sharedSecret: ss)) != nil else { return }
+
+        switch signed.payload {
+        case .heartbeat(_, let nonce):
+            // Reply with HeartbeatAck (same nonce, new ts)
+            let replyNonce = nonce
+            let ts = UInt64(Date().timeIntervalSince1970 * 1000)
+            guard let ack = try? SignedCtrl.sign(.heartbeatAck(ts: ts, nonce: replyNonce), sharedSecret: ss),
+                  let json = try? JSONEncoder().encode(ack),
+                  let str = String(data: json, encoding: .utf8) else { return }
+            Task { await self.rtc?.sendCtrl(str) }
+            hbAckCount += 1
+            lastAckDate = Date()
+
+        case .heartbeatAck:
+            // iOS is answerer; Mac sends hb. If Mac sends ack it's unexpected, ignore.
+            break
+
+        default:
+            break
+        }
+    }
+
     private func sendIce(_ candidateJson: String) async {
         guard let ws = ws else { return }
         guard let data = candidateJson.data(using: .utf8),
@@ -104,14 +162,6 @@ actor RtcGlue {
         if let outer = try? JSONSerialization.data(withJSONObject: inner),
            let s = String(data: outer, encoding: .utf8) {
             try? await ws.send(s)
-        }
-    }
-
-    private func handleState(_ s: RtcClient.PeerState) {
-        switch s {
-        case .connected: emit(.connected)
-        case .failed, .closed: emit(.failed)
-        default: emit(.negotiating)
         }
     }
 
