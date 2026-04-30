@@ -113,6 +113,10 @@ actor RtcGlue {
                 if let candidate = dict["candidate"] as? String {
                     try? await rtc.applyRemoteCandidate(candidate)
                 }
+            case "restart":
+                // Mac 主动触发 ICE restart，等待对端发来新 offer 即可（已由 sdp/offer 分支处理）。
+                // 这里只做 logging 与状态汇报。
+                print("rtc_glue: received restart hint from peer")
             default:
                 break
             }
@@ -156,10 +160,8 @@ actor RtcGlue {
 
     private func sendIce(_ candidateJson: String) async {
         guard let ws = ws else { return }
-        guard let data = candidateJson.data(using: .utf8),
-              var inner = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-        inner["kind"] = "ice"
-        if let outer = try? JSONSerialization.data(withJSONObject: inner),
+        let frame: [String: Any] = ["kind": "ice", "candidate": candidateJson]
+        if let outer = try? JSONSerialization.data(withJSONObject: frame),
            let s = String(data: outer, encoding: .utf8) {
             try? await ws.send(s)
         }

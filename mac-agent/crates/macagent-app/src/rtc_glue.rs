@@ -53,13 +53,7 @@ enum SignalFrame {
     #[serde(rename = "sdp")]
     Sdp { side: String, sdp: String },
     #[serde(rename = "ice")]
-    Ice {
-        candidate: String,
-        #[serde(rename = "sdpMid")]
-        sdp_mid: Option<String>,
-        #[serde(rename = "sdpMLineIndex")]
-        sdp_mline_index: Option<u16>,
-    },
+    Ice { candidate: String },
     #[serde(rename = "restart")]
     Restart { reason: String },
 }
