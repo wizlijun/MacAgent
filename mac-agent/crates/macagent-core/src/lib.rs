@@ -4,6 +4,7 @@
 
 pub mod ctrl_msg;
 pub mod pair_auth;
+pub mod signaling;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
