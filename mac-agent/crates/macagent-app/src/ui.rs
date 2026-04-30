@@ -4,10 +4,11 @@
 //! Transitions are driven by results arriving from the reqwest task via mpsc.
 
 use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::Result;
 use egui::ColorImage;
-use macagent_core::pair_auth::{PairAuth, PairRecord, PairToken};
+use macagent_core::pair_auth::{derive_shared_secret, PairAuth, PairRecord, PairToken, X25519Pub};
 
 use crate::{keychain, pair_qr};
 
@@ -34,8 +35,15 @@ pub enum PairState {
 
 // ── Background task result ──────────────────────────────────────────────────
 
-pub enum PairResult {
-    Created { _token: PairToken, png: Vec<u8> },
+pub enum UiEvent {
+    Created {
+        _token: PairToken,
+        png: Vec<u8>,
+    },
+    Paired {
+        pair_id: String,
+        peer_pubkey_b64: String,
+    },
     Error(String),
 }
 
@@ -49,8 +57,10 @@ pub struct MacAgentApp {
     /// PNG bytes from a just-completed /pair/create, pending texture upload.
     pub pending_png: Option<Vec<u8>>,
     pub runtime: tokio::runtime::Handle,
-    pub rx: mpsc::Receiver<PairResult>,
-    pub tx: mpsc::SyncSender<PairResult>,
+    pub rx: mpsc::Receiver<UiEvent>,
+    pub tx: mpsc::SyncSender<UiEvent>,
+    /// room_id pending texture upload (carried alongside pending_png).
+    pub pending_room_id: Option<String>,
 }
 
 impl MacAgentApp {
@@ -86,6 +96,7 @@ impl MacAgentApp {
             state,
             last_error: None,
             pending_png: None,
+            pending_room_id: None,
             runtime,
             rx,
             tx,
@@ -117,7 +128,6 @@ impl MacAgentApp {
         }))
     }
 
-    #[allow(dead_code)] // called when pair/claim completes (future milestone)
     pub fn save_pair_record(record: &PairRecord) -> Result<()> {
         keychain::save(KC_PAIR_ID, record.pair_id.as_bytes())?;
         keychain::save(KC_PEER_PUBKEY, record.peer_pubkey_b64.as_bytes())?;
@@ -142,13 +152,23 @@ impl MacAgentApp {
 
         self.runtime.spawn(async move {
             match pair_create_request(&worker_url, &pubkey_b64).await {
-                Ok((_token, png)) => {
-                    let _ = tx.send(PairResult::Created { _token, png });
+                Ok((token, png)) => {
+                    let _ = tx.send(UiEvent::Created { _token: token, png });
                 }
                 Err(e) => {
-                    let _ = tx.send(PairResult::Error(e.to_string()));
+                    let _ = tx.send(UiEvent::Error(e.to_string()));
                 }
             }
+        });
+    }
+
+    /// Spawn a polling task to GET /pair/event/:room_id until iOS claims.
+    fn start_polling(&self, room_id: String) {
+        let worker_url = self.worker_url.clone();
+        let tx = self.tx.clone();
+
+        self.runtime.spawn(async move {
+            poll_room_event(worker_url, room_id, tx).await;
         });
     }
 
@@ -156,17 +176,51 @@ impl MacAgentApp {
     fn poll_rx(&mut self) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                PairResult::Created { _token: _, png } => {
+                UiEvent::Created { _token, png } => {
                     self.last_error = None;
+                    self.pending_room_id = Some(_token.room_id.clone());
                     // Store PNG; texture is uploaded on the next frame when ctx is available.
                     self.pending_png = Some(png);
                 }
-                PairResult::Error(e) => {
+                UiEvent::Paired {
+                    pair_id,
+                    peer_pubkey_b64,
+                } => {
+                    // Derive shared_secret and save all Keychain entries.
+                    match self.complete_pairing(pair_id, peer_pubkey_b64) {
+                        Ok(record) => {
+                            self.last_error = None;
+                            self.state = PairState::Paired { record };
+                        }
+                        Err(e) => {
+                            self.last_error = Some(e.to_string());
+                            self.state = PairState::NotPaired;
+                        }
+                    }
+                }
+                UiEvent::Error(e) => {
                     self.last_error = Some(e);
                     self.state = PairState::NotPaired;
                 }
             }
         }
+    }
+
+    /// Derive shared_secret, write Keychain, return PairRecord.
+    fn complete_pairing(&self, pair_id: String, peer_pubkey_b64: String) -> Result<PairRecord> {
+        let peer_pub = X25519Pub::from_b64(&peer_pubkey_b64)?;
+        let shared_secret = derive_shared_secret(&self.local_keys, &peer_pub)?;
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine;
+        let device_secret_b64 = B64.encode(shared_secret);
+        let record = PairRecord {
+            pair_id,
+            peer_pubkey_b64,
+            device_secret_b64,
+            worker_url: self.worker_url.clone(),
+        };
+        Self::save_pair_record(&record)?;
+        Ok(record)
     }
 
     /// Load a PNG byte buffer into an egui texture.
@@ -232,6 +286,36 @@ enum StateTransition {
     Revoke,
 }
 
+// ── polling helper ──────────────────────────────────────────────────────────
+
+async fn poll_room_event(worker_url: String, room_id: String, tx: mpsc::SyncSender<UiEvent>) {
+    let url = format!(
+        "{}/pair/event/{}",
+        worker_url.trim_end_matches('/'),
+        room_id
+    );
+    // 150 iterations × 2s = 5 minutes timeout.
+    for _ in 0..150 {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        match reqwest::get(&url).await {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let (Some(pid), Some(ipub)) =
+                        (json["pair_id"].as_str(), json["ios_pubkey_b64"].as_str())
+                    {
+                        let _ = tx.send(UiEvent::Paired {
+                            pair_id: pid.into(),
+                            peer_pubkey_b64: ipub.into(),
+                        });
+                        return;
+                    }
+                }
+            }
+            _ => {} // 404 or network error: keep polling
+        }
+    }
+}
+
 // ── reqwest helper ──────────────────────────────────────────────────────────
 
 async fn pair_create_request(worker_url: &str, pubkey_b64: &str) -> Result<(PairToken, Vec<u8>)> {
@@ -284,6 +368,9 @@ impl eframe::App for MacAgentApp {
         // If a PNG arrived from the background task, upload it as a texture now that ctx is live.
         if let Some(png) = self.pending_png.take() {
             let texture = Self::load_texture(ctx, &png);
+            let room_id = self.pending_room_id.take().unwrap_or_default();
+            // Start polling for iOS claim now that we have the room_id.
+            self.start_polling(room_id);
             self.state = PairState::Pairing {
                 qr_texture: texture,
             };

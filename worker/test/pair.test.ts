@@ -140,3 +140,41 @@ describe("POST /pair/claim", () => {
     expect((await second.json()).error).toBe("unknown_or_expired_token");
   });
 });
+
+describe("GET /pair/event/:room_id", () => {
+  it("returns event after iOS claims", async () => {
+    const mac_pub = mac_pub_b64();
+    const ios_pub = ios_pub_b64();
+    const create = await SELF.fetch("https://example.com/pair/create", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mac_pubkey: mac_pub }),
+    });
+    const { pair_token, room_id } = await create.json();
+    await SELF.fetch("https://example.com/pair/claim", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair_token, ios_pubkey: ios_pub }),
+    });
+
+    const res = await SELF.fetch(`https://example.com/pair/event/${room_id}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.peer_joined).toBe(true);
+    expect(body.ios_pubkey_b64).toBe(ios_pub);
+    expect(body.pair_id).toMatch(/^[a-f0-9-]{36}$/);
+  });
+
+  it("returns 404 before iOS claims", async () => {
+    const create = await SELF.fetch("https://example.com/pair/create", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mac_pubkey: mac_pub_b64() }),
+    });
+    const { room_id } = await create.json();
+    const res = await SELF.fetch(`https://example.com/pair/event/${room_id}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("400 on invalid room_id format", async () => {
+    const res = await SELF.fetch("https://example.com/pair/event/not-a-uuid");
+    expect(res.status).toBe(400);
+  });
+});

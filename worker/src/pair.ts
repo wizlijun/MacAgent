@@ -69,3 +69,14 @@ export async function handlePairClaim(req: Request, env: Env): Promise<Response>
 
   return Response.json({ pair_id, mac_pubkey: tokRec.mac_pubkey_b64, ios_device_secret });
 }
+
+export async function handlePairEvent(req: Request, env: Env, room_id: string): Promise<Response> {
+  if (!room_id || !/^[a-f0-9-]{36}$/.test(room_id)) {
+    return Response.json({ error: "invalid_room_id" }, { status: 400 });
+  }
+  const evt = await env.PAIRS.get(`room_event:${room_id}`, "json");
+  if (!evt) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
+  return Response.json(evt);
+}
