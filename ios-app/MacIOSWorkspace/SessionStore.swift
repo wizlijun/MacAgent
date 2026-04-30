@@ -22,6 +22,7 @@ final class SessionStore {
     private(set) var connectedTick: Int = 0
 
     var clipboardStore: ClipboardStore?  // PairedView 注入
+    var watcherStore: WatcherStore?     // PairedView 注入
 
     private let glue: RtcGlue?
 
@@ -132,6 +133,12 @@ final class SessionStore {
             if case .mac = source {  // 只接 Mac → iOS 方向
                 clipboardStore?.handleRemote(content)
             }
+
+        case .watchersList(let sid, let watchers):
+            watcherStore?.handleList(sid: sid, list: watchers)
+
+        case .watcherMatched(let sid, let watcherId, let lineText):
+            watcherStore?.handleMatched(sid: sid, watcherId: watcherId, lineText: lineText)
 
         default:
             break

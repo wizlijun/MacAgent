@@ -11,6 +11,7 @@ struct PairedView: View {
     @State var lastAckSecondsAgo: Int? = nil
     @State private var sessionStore: SessionStore = SessionStore(glue: nil)
     @State private var clipboardStore: ClipboardStore?
+    @State private var watcherStore: WatcherStore?
 
     var body: some View {
         NavigationStack {
@@ -70,8 +71,11 @@ struct PairedView: View {
         rtcGlue = glue
         let cs = ClipboardStore(glue: glue)
         clipboardStore = cs
+        let ws = WatcherStore(glue: glue)
+        watcherStore = ws
         sessionStore = SessionStore(glue: glue)
         sessionStore.clipboardStore = cs
+        sessionStore.watcherStore = ws
         Task {
             for await s in glue.states() {
                 rtcState = s

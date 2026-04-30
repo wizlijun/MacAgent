@@ -128,6 +128,17 @@ struct SessionDetailView: View {
             )
         }
         .navigationTitle(sessionLabel)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if let ws = store.watcherStore {
+                    NavigationLink {
+                        WatchersView(store: ws, sid: sid)
+                    } label: {
+                        Image(systemName: "bell.badge")
+                    }
+                }
+            }
+        }
         .task {
             await store.attach(sid: sid)
         }
