@@ -4,7 +4,6 @@
 //! M1 起替换为完整的 egui 菜单栏 / 设置 UI。
 
 use anyhow::{Context, Result};
-use std::time::Duration;
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
@@ -45,6 +44,8 @@ fn main() -> Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
 
     // 在事件循环跑起来之前装载托盘
+    // _tray 必须保持 alive 直到事件循环结束——drop 会立即销毁系统托盘图标。
+    // 用 _tray 而非 _ 是为了 keep ownership 而非 drop-immediately。
     let (_tray, quit_item) = build_tray()?;
     let quit_id = quit_item.id().clone();
 
@@ -57,8 +58,8 @@ fn main() -> Result<()> {
     eprintln!("macagent v{} started; tray icon should be visible", macagent_core::version());
 
     event_loop.run(move |event, _window_target, control_flow| {
-        // 默认让事件循环等待事件，不空转 CPU
-        *control_flow = ControlFlow::WaitUntil(std::time::Instant::now() + Duration::from_secs(60));
+        // 菜单栏常驻进程：事件来才唤醒，零 CPU 开销
+        *control_flow = ControlFlow::Wait;
 
         if let Event::UserEvent(UserEvent::MenuEvent(evt)) = event {
             if evt.id == quit_id {
