@@ -4,6 +4,7 @@
 
 pub mod ctrl_msg;
 pub mod pair_auth;
+pub mod rtc_peer;
 pub mod signaling;
 
 pub fn version() -> &'static str {

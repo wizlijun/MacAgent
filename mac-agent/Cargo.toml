@@ -29,6 +29,8 @@ serde_json = "1.0"
 security-framework = "3.0"
 uuid = { version = "1.10", features = ["v4"] }
 qrcode = "0.14"
+webrtc = "0.11"
+bytes = "1.7"
 
 [profile.dev]
 opt-level = 0
