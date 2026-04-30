@@ -4,10 +4,21 @@ import SwiftUI
 struct QRScannerView: UIViewRepresentable {
     let onScan: (String) -> Void
 
+    final class PreviewContainer: UIView {
+        var previewLayer: AVCaptureVideoPreviewLayer?
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            previewLayer?.frame = bounds
+            CATransaction.commit()
+        }
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator(onScan: onScan) }
 
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: .zero)
+    func makeUIView(context: Context) -> PreviewContainer {
+        let view = PreviewContainer(frame: .zero)
         let session = AVCaptureSession()
         context.coordinator.session = session
 
@@ -25,17 +36,16 @@ struct QRScannerView: UIViewRepresentable {
         let preview = AVCaptureVideoPreviewLayer(session: session)
         preview.videoGravity = .resizeAspectFill
         view.layer.addSublayer(preview)
+        view.previewLayer = preview
         context.coordinator.previewLayer = preview
 
         DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.previewLayer?.frame = uiView.bounds
-    }
+    func updateUIView(_ uiView: PreviewContainer, context: Context) {}
 
-    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+    static func dismantleUIView(_ uiView: PreviewContainer, coordinator: Coordinator) {
         coordinator.session?.stopRunning()
     }
 
