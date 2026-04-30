@@ -114,4 +114,29 @@ describe("POST /pair/claim", () => {
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe("invalid_ios_pubkey");
   });
+
+  it("404 on second claim with already-used token", async () => {
+    const mac_pub = mac_pub_b64();
+    const ios_pub = ios_pub_b64();
+    const create = await SELF.fetch("https://example.com/pair/create", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mac_pubkey: mac_pub }),
+    });
+    const { pair_token } = await create.json();
+
+    // 第一次 claim：成功
+    const first = await SELF.fetch("https://example.com/pair/claim", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair_token, ios_pubkey: ios_pub }),
+    });
+    expect(first.status).toBe(200);
+
+    // 第二次 claim：token 已被消费，应 404
+    const second = await SELF.fetch("https://example.com/pair/claim", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pair_token, ios_pubkey: ios_pub }),
+    });
+    expect(second.status).toBe(404);
+    expect((await second.json()).error).toBe("unknown_or_expired_token");
+  });
 });

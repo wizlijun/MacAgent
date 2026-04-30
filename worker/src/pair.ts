@@ -45,6 +45,10 @@ export async function handlePairClaim(req: Request, env: Env): Promise<Response>
   const pair_id = crypto.randomUUID();
   const ios_device_secret = genDeviceSecret();
 
+  // 顺序：先 putPair（让 pair record 落地），再 deletePairToken（防止旧 token 重复使用），
+  // 最后写 room_event（让 Mac Agent 端轮询能看到 iOS 已加入）。
+  // 这三步非原子（KV 不支持事务）；若中途 crash 会留下未删 token，
+  // 但 5 分钟 TTL 是兜底；M1.3 改用 DO 后通知机制，room_event KV 项可下线。
   await putPair(env, pair_id, {
     mac_pubkey_b64: tokRec.mac_pubkey_b64,
     ios_pubkey_b64: body.ios_pubkey,
