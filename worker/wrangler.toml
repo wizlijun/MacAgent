@@ -18,4 +18,4 @@ new_sqlite_classes = ["SignalingRoom"]
 # 把返回的 id 填到下面的占位
 [[kv_namespaces]]
 binding = "PAIRS"
-id = "PLACEHOLDER_PAIRS_KV_ID"
+id = "bc7804a6c3fa4dd1adc3c6467322aa9b"
