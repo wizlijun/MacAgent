@@ -30,7 +30,15 @@ pub struct PtyHandles {
 }
 
 /// Fork a PTY running `command[0]` with `command[1..]` as arguments.
-pub fn spawn_pty(command: &[String], cols: u16, rows: u16) -> Result<PtyHandles> {
+///
+/// `extra_env` is a list of `(key, value)` pairs injected into the child's
+/// environment at fork time (e.g. `MACAGENT_SESSION_ID`).
+pub fn spawn_pty(
+    command: &[String],
+    cols: u16,
+    rows: u16,
+    extra_env: &[(String, String)],
+) -> Result<PtyHandles> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -44,6 +52,9 @@ pub fn spawn_pty(command: &[String], cols: u16, rows: u16) -> Result<PtyHandles>
     let mut cmd = CommandBuilder::new(&command[0]);
     for arg in command.iter().skip(1) {
         cmd.arg(arg);
+    }
+    for (k, v) in extra_env {
+        cmd.env(k, v);
     }
 
     let mut child = pair
@@ -141,7 +152,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_echo_and_read() {
-        let mut handles = spawn_pty(&["echo".to_string(), "hello".to_string()], 80, 24)
+        let mut handles = spawn_pty(&["echo".to_string(), "hello".to_string()], 80, 24, &[])
             .expect("spawn_pty failed");
 
         // Collect chunks until child exits or we see "hello".

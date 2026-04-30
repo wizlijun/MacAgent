@@ -35,7 +35,7 @@ struct UnpairedView: View {
             QRScannerView { json in
                 presenting = false
                 Task {
-                    do { try await PairingFlow.claim(scannedJSON: json, store: store) }
+                    do { try await PairingFlow.claim(scannedJSON: json, store: store, apnsTokenHex: PushHandler.currentTokenHex) }
                     catch { self.error = "\(error)" }
                 }
             }

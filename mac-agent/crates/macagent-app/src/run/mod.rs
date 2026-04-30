@@ -101,8 +101,9 @@ impl Producer {
 
         eprintln!("[macagent run] session={sid} cmd={:?}", args.command);
 
-        // Fork PTY.
-        let pty = spawn_pty(&args.command, cols, rows)?;
+        // Fork PTY — inject session id so child processes can use it.
+        let extra_env = vec![("MACAGENT_SESSION_ID".to_string(), sid.clone())];
+        let pty = spawn_pty(&args.command, cols, rows, &extra_env)?;
         let parser = ParserState::new(cols, rows);
 
         Ok(Self {

@@ -104,6 +104,11 @@ describe("POST /turn/cred", () => {
       .get("https://rtc.live.cloudflare.com")
       .intercept({ path: /\/v1\/turn\/keys\/.*\/credentials\/generate/, method: "POST" })
       .reply(500, "");
+    // turn.ts fires a best-effort debug GET /v1/turn/keys on 5xx; mock it too.
+    fetchMock
+      .get("https://rtc.live.cloudflare.com")
+      .intercept({ path: "/v1/turn/keys", method: "GET" })
+      .reply(200, "[]");
 
     const res = await SELF.fetch("https://e/turn/cred", {
       method: "POST", headers: { "content-type": "application/json" },

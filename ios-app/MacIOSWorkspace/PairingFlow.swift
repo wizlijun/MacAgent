@@ -7,7 +7,7 @@ struct PairTokenPayload: Codable {
 }
 
 enum PairingFlow {
-    static func claim(scannedJSON: String, store: PairStore) async throws {
+    static func claim(scannedJSON: String, store: PairStore, apnsTokenHex: String? = nil) async throws {
         let token = try JSONDecoder().decode(PairTokenPayload.self, from: Data(scannedJSON.utf8))
 
         let keys: PairKeys
@@ -21,10 +21,14 @@ enum PairingFlow {
         var req = URLRequest(url: URL(string: "\(token.worker_url)/pair/claim")!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: [
+        var body: [String: Any] = [
             "pair_token": token.pair_token,
             "ios_pubkey": keys.publicKeyB64,
-        ])
+        ]
+        if let hex = apnsTokenHex {
+            body["ios_apns_token"] = hex
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
             throw NSError(domain: "Pair", code: 1, userInfo: [NSLocalizedDescriptionKey: "claim failed"])

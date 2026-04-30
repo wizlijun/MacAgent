@@ -4,6 +4,9 @@ import UserNotifications
 
 @MainActor
 final class PushHandler: NSObject, ObservableObject, UIApplicationDelegate {
+    /// Shared last-known APNs token; readable from any isolation context.
+    nonisolated(unsafe) static var currentTokenHex: String?
+
     @Published var deviceTokenHex: String?
     @Published var lastDeepLink: String?
     private let center = UNUserNotificationCenter.current()
@@ -30,6 +33,7 @@ final class PushHandler: NSObject, ObservableObject, UIApplicationDelegate {
                      didRegisterForRemoteNotificationsWithDeviceToken token: Data) {
         let hex = token.map { String(format: "%02x", $0) }.joined()
         deviceTokenHex = hex
+        Self.currentTokenHex = hex
         print("[PushHandler] APNs token:", hex)
     }
 
