@@ -1,28 +1,33 @@
-# M4 · 剪贴板 + 通知 实现计划
+# M4 · 剪贴板 + 通知 + iOS 输入增强 实现计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development（推荐）。
 
-**Goal:**
-1. **剪贴板双向同步**：Mac NSPasteboard 内容变化 → 自动推到 iOS（500ms 轮询）；iOS 用户显式按"发送到 Mac" → 写 NSPasteboard。
-2. **`notify <cmd>` 命令完成推送**：用户在 Mac 终端跑 `macagent notify -- pnpm build` → shim 跑命令 + 退出时上报 → Mac Agent 触发 APNs → iPhone 收到推送（含 deep-link 到对应 session）。
-3. **正则 watcher 推送**：iOS 上对某 session 设置正则（如 `error:`、`pull request created`）→ producer 输出命中 → APNs 推送。
+**Goal（系统化解决 iOS 作为 Mac 外设的输入 / 剪贴板 / 通知三类能力）：**
+
+1. **iOS 输入增强（ComposeSheet）**：iOS 26 标准 `TextEditor` 多行 sheet → 用户系统/微信/搜狗/讯飞键盘的 IME 与 🎤 语音天然可用 → Send 时一次性把整段 UTF-8 字节流送进 PTY。CLI 与 GUI 共用同一组件（M4 仅落 CLI 路径，GUI 留给 M5/M6 接 InputInjector.paste_text）。
+2. **剪贴板双向同步**：Mac NSPasteboard 内容变化 → 自动推到 iOS（500 ms 轮询）；iOS 用户显式按"发送到 Mac" → 写 NSPasteboard。
+3. **`notify <cmd>` 命令完成推送**：用户在 Mac 终端跑 `macagent notify -- pnpm build` → shim 跑命令 + 退出时上报 → Mac Agent 触发 APNs → iPhone 收到推送（含 deep-link）。
+4. **正则 watcher 推送**：iOS 上对某 session 设置正则 → producer 输出命中 → APNs + ctrl `WatcherMatched`（前台 UI 实时显示）。
 
 **Architecture（承接 M3 v2 producer 模型）：**
-- **Mac Agent** 加 `ClipboardBridge`（轮询 NSPasteboard）+ `NotifyEngine`（管 notify 命令注册 + 正则 watcher 维护）。
-- **socket_proto** 加 NotifyRegister/NotifyAck/NotifyComplete 三个变体（shim 与 Agent 间）。
-- **ctrl 协议** 加 ClipboardSet（双向）+ WatchSession/UnwatchSession（iOS → Mac 配置 watcher）。
-- **Worker** 加 `POST /push`：Mac 签名请求 → Worker 用 APNS_AUTH_KEY 签 JWT → 调 APNs HTTP/2。
-- **iOS** 申请 Push Notification entitlement + 实现 PushHandler 注册 token + 处理 deep-link。
-- **`macagent notify` 子命令**：复用 macagent-app binary 的 clap 子命令；shim 内 fork+exec+wait + Unix socket 报到。
+
+- **iOS** 加 `ComposeSheet`（共用 SwiftUI 组件）+ `ClipboardStore`/`ClipboardPanel` + `WatcherStore`/`WatchersView` + `PushHandler`（UNUserNotificationCenter）。
+- **Mac Agent** 加 `ClipboardBridge`（NSPasteboard 轮询）+ `NotifyEngine`（管 notify 命令注册 + 正则 watcher 维护）+ `PushClient`（HMAC 签名调 Worker `/push`）。
+- **socket_proto** 加 `NotifyRegister/Complete` + `NotifyAck`（shim 与 Agent 间）。
+- **ctrl 协议** 加 `ClipboardSet`（双向）、`WatchSession`/`UnwatchSession`/`WatchersList`/`WatcherMatched`（Mac/iOS 同步）。**ComposeSheet 不需要新 ctrl 类型**，复用 M3.1 的 `Input { sid, TerminalInput::Text }`。
+- **Worker** 加 `POST /push`：Mac 签名请求 → Worker 用 APNS_AUTH_KEY 签 ES256 JWT → 调 APNs HTTP/2。
+- **iOS 申请 Push Notification entitlement**。
+- **`macagent notify` 是 macagent-app 的 clap 子命令**：fork+exec+wait + Unix socket 报到（不复用 macagent run 的复杂 PTY 路径）。
 
 **Tech Stack（M4 新增）:**
-- Mac: 已有 `tokio` + `cocoa-foundation`/`objc2-app-kit` 拿 NSPasteboard（或简单 `pbpaste`/`pbcopy` 命令兜底）。
-- Worker: `jose` 类 JWT（CF Workers 自带 `crypto.subtle` 可签 ES256）。
-- iOS: `UNUserNotificationCenter` 申请权限 + `UIApplicationDelegate.didRegisterForRemoteNotificationsWithDeviceToken`。
 
-**对应 spec：** `docs/superpowers/specs/2026-04-30-mac-iphone-workspace-design.md` §3.1 ClipboardBridge / NotifyEngine、§3.2 ClipboardPanel / PushHandler、§3.3 `/push`、§4.5 剪贴板、§4.6 通知、§7 M4。
+- Mac: `tokio` Command（`pbpaste` / `pbcopy` 子进程跑剪贴板，避开 objc2-app-kit 复杂绑定）；`regex = "1"`（正则 watcher）。
+- Worker: `crypto.subtle`（ES256 签 APNs JWT）+ HTTP/2 fetch APNs endpoint。
+- iOS: `UserNotifications` framework（系统自带，无新依赖）；SwiftUI `TextEditor`（已有，无新依赖）。
 
-**M3 debt 一并清理**（M4.0 task）：
+**对应 spec：** `docs/superpowers/specs/2026-04-30-mac-iphone-workspace-design.md` §3.1 ClipboardBridge / NotifyEngine、§3.2 ClipboardPanel / ComposeSheet / PushHandler、§3.3 `/push`、§4.5 / §4.6、§7 M4；以及独立 spec [`2026-04-30-ios-input-compose-design.md`](../specs/2026-04-30-ios-input-compose-design.md)（ComposeSheet 完整设计）。
+
+**M3 debt 一并清理（M4.0 task）：**
 - I2：iOS LaunchAck/Reject 给用户反馈（loading / error alert）
 - I3：WebRTC reconnect 后 SessionDetailView 自动 re-attach + refresh snapshot
 
@@ -34,35 +39,32 @@
 
 **剪贴板**：
 ```rust
-ClipboardSet  { source: ClipSource, content: ClipContent }   // 双向
-ClipboardAck  { req_id: Option<String> }                     // 收到确认（最佳努力）
-
+ClipboardSet { source: ClipSource, content: ClipContent }   // 双向
 ClipSource    { Mac | Ios }
-ClipContent   { Text { data: String } }                      // M4 仅文本；图片/RTF 推 M5+
+ClipContent   { Text { data: String } }                     // M4 仅文本；图片/RTF 推 M5+
 ```
 
 **Watcher**：
 ```rust
 WatchSession    { sid: String, watcher_id: String, regex: String, name: String }
 UnwatchSession  { sid: String, watcher_id: String }
-WatchersList    { sid: String, watchers: Vec<WatcherInfo> }  // Mac → iOS 同步当前 watcher 列表
-WatcherInfo     { id, regex, name, hits, last_match_text? }
-WatcherMatched  { sid, watcher_id, line_text }               // Mac → iOS 通知（除了 APNs 外，前台 iOS 也能立即看到）
+WatchersList    { sid: String, watchers: Vec<WatcherInfo> }
+WatcherInfo     { id: String, regex: String, name: String, hits: u32, last_match: Option<String> }
+WatcherMatched  { sid: String, watcher_id: String, line_text: String }
 ```
 
-**通知（command notify）**：
-- `notify` shim 不直接走 ctrl；Agent 处理后只推 APNs，iOS 端通过 PushHandler 拿到。**ctrl 上不需要新 case**。
+**ComposeSheet 不需要新 ctrl 类型**。Send 时复用 M3.1 `Input { sid, payload: TerminalInput::Text { data: <整段 utf8> } }`，传输层与 inline live-typing 无差别。
 
-### Unix socket 协议扩展（producer/notify ↔ Agent）
+### Unix socket 协议扩展
 
-P2A（producer 或 shim → Agent）新增：
+P2A（producer 或 notify shim → Agent）新增：
 ```rust
 NotifyRegister {
-    register_id: String,                  // shim 自生 UUID
+    register_id: String,
     argv: Vec<String>,
     started_at_ms: u64,
-    session_hint: Option<String>,         // 来自 MACAGENT_SESSION_ID env（如父 shell 是某 session 的 PTY）
-    title: Option<String>,                // 自定义 title，否则用 argv[0]
+    session_hint: Option<String>,
+    title: Option<String>,
 }
 NotifyComplete {
     register_id: String,
@@ -73,7 +75,7 @@ NotifyComplete {
 
 A2P 新增：
 ```rust
-NotifyAck { register_id: String }     // Agent 收到 NotifyRegister 后回；shim 用此知道注册成功
+NotifyAck { register_id: String }
 ```
 
 ### Worker `POST /push`
@@ -87,19 +89,16 @@ NotifyAck { register_id: String }     // Agent 收到 NotifyRegister 后回；sh
   "title": "build done",
   "body": "exit 0 in 5m12s",
   "deeplink": "macagent://session/<sid>",
-  "thread_id": "<sid>"             // APNs thread-id 让多个 session 推送在通知中心分组
+  "thread_id": "<sid>"
 }
 ```
 
-响应：
-- 200 `{ pushed: true, apns_id: "<uuid>" }`
-- 401 bad_sig / 404 unknown_pair / 410 apns_unregistered（Worker 已标记 dead）/ 503 apns_unavailable
-- ts skew > 60s → 400
+响应：200 / 401 / 404 / 410（apns_unregistered，Worker 标 dead）/ 503 / 400。
 
-KV schema 扩展：
+KV 扩展：
 ```
-apns_dead:<pair_id>    → { reason, since }                (90 天 TTL，已存在)
-apns_token:<pair_id>   → "<device_token_hex>"             (无 TTL；从 /pair/claim 时 ios_apns_token 复制；deviceToken refresh 时重写)
+apns_token:<pair_id>   → "<device_token_hex>"   (无 TTL；/pair/claim 时存 + iOS 端定期 refresh)
+apns_dead:<pair_id>    → { reason, since }      (M2.7 已有，用于 /push 短路)
 ```
 
 ---
@@ -109,33 +108,38 @@ apns_token:<pair_id>   → "<device_token_hex>"             (无 TTL；从 /pair
 ```
 mac-agent/crates/macagent-core/src/
 ├── ctrl_msg.rs                        ← 加 6 个新 CtrlPayload + 4 个共享类型
-├── socket_proto.rs                    ← 加 NotifyRegister/Complete + NotifyAck
+└── socket_proto.rs                    ← 加 NotifyRegister/Complete + NotifyAck
 
 mac-agent/crates/macagent-app/src/
-├── clipboard_bridge.rs                ← 新：NSPasteboard 轮询 + 写
+├── clipboard_bridge.rs                ← 新：pbpaste/pbcopy 包装
 ├── notify_engine.rs                   ← 新：notify 命令注册 + 正则 watcher
 ├── push_client.rs                     ← 新：调 Worker /push + HMAC 签名
 ├── notify/                            ← 新：notify 子命令 producer
-│   ├── mod.rs                         ← 入口（fork+exec+wait + socket register/complete）
-│   └── socket_client.rs               ← 与 macagent run 的 socket_client 共用？或独立简化版
-├── session_router.rs                  ← 改：dispatch 新 ctrl 消息（ClipboardSet / WatchSession /...）
-└── main.rs                            ← 改：新增 `notify` 子命令
+│   └── mod.rs
+├── session_router.rs                  ← 改：dispatch 新 ctrl 消息
+└── main.rs                            ← 改：clap 加 `notify` 子命令
 
 ios-app/MacIOSWorkspace/
+├── Compose/                           ← 新（v0.1 仅 CLI 路径用）
+│   └── ComposeSheet.swift             ← TextEditor sheet（CLI / GUI 共用，注入不同 onSend）
 ├── Clipboard/                         ← 新
-│   ├── ClipboardPanel.swift           ← 显示远端剪贴板 + "发送到 Mac" 按钮
-│   └── ClipboardStore.swift           ← @Observable 存最近 5 条
+│   ├── ClipboardPanel.swift
+│   └── ClipboardStore.swift
 ├── Notify/                            ← 新
 │   ├── PushHandler.swift              ← UNUserNotificationCenter delegate + token register
-│   ├── WatcherStore.swift             ← @Observable 维护各 session 的 watchers
-│   └── WatchersView.swift             ← UI：列出当前 watchers + 添加 regex
-├── MacIOSWorkspaceApp.swift           ← 改：iOS UIApplicationDelegate 钩入 PushHandler
-├── PairedView.swift                   ← 改：加 ClipboardPanel + WatchersView 入口
+│   ├── WatcherStore.swift
+│   └── WatchersView.swift
+├── Term/InputBar.swift                ← 改：右端加 ✏️ 按钮 → 弹 ComposeSheet
+├── MacIOSWorkspaceApp.swift           ← 改：UIApplicationDelegateAdaptor → PushHandler
+├── PairedView.swift                   ← 改：加 NavigationLink "剪贴板"
+├── SessionListView.swift::SessionDetailView ← 改：加 NavigationLink "正则提醒"
 └── MacIOSWorkspace.entitlements       ← 加 aps-environment
 
 worker/src/
-├── push.ts                            ← 新：handlePush + APNs JWT (ES256)
-├── apns.ts                            ← 新：APNs HTTP/2 client + 410 处理
+├── apns.ts                            ← 新：APNs ES256 JWT + HTTP/2 client
+├── push.ts                            ← 新：handlePush
+├── kv.ts                              ← 改：putApnsToken / markApnsDead
+├── pair.ts                            ← 改：claim 时存 ios_apns_token
 └── index.ts                           ← 改：路由 /push
 ```
 
@@ -144,54 +148,61 @@ worker/src/
 ## Task M4.0：M3 debt 清理（I2 + I3）
 
 **Files:**
-- Modify: `ios-app/MacIOSWorkspace/SessionStore.swift`（处理 LaunchAck/LaunchReject 把状态写回 store）
-- Modify: `ios-app/MacIOSWorkspace/SessionListView.swift`（launcher 按钮加 loading state；显示 error alert）
-- Modify: `ios-app/MacIOSWorkspace/SessionListView.swift::SessionDetailView`（observe glue 状态；reconnect 时重新 attach + 刷新 snapshot）
+- Modify: `ios-app/MacIOSWorkspace/SessionStore.swift`
+- Modify: `ios-app/MacIOSWorkspace/SessionListView.swift`
+
+### 改动
+
+1. SessionStore 加 `pendingLaunches: [String: PendingLaunch]`，`launch()` 返回 reqId 并跟踪。
+2. handle `.launchAck` → 找 reqId → 自动 NavigationLink 跳进新 sid 的 SessionDetailView；handle `.launchReject` → 弹 alert。
+3. SessionListView launcher 按钮根据 pendingLaunches 状态显示 ProgressView。
+4. SessionDetailView 监听 `glue.glueState`（M2.5 已有），从非 connected 切回 connected 时再调一次 `attach(sid)`。
 
 ### 步骤
 
-1. SessionStore 加 `pendingLaunches: [String: PendingLaunch]`，`launch()` 返回 reqId 并跟踪
-2. handle .launchAck → `pendingLaunches[reqId]` 状态切 .succeeded(sid) 并自动 NavigationLink 跳进去；handle .launchReject → 切 .failed，UI 弹 alert
-3. SessionListView 显示 launcher 时根据 pendingLaunches 显示 spinner
-4. SessionDetailView 监听 glue.glueState（M2.5 已有的 GlueState）；连接恢复时再调一次 attach
-5. xcodebuild build 过
-6. commit：`fix(ios-app): launcher feedback (LaunchAck/Reject) and re-attach on reconnect (M3 I2+I3)`
+1. 改 SessionStore + SessionListView
+2. xcodebuild build 过
+3. commit：`fix(ios-app): launcher feedback (LaunchAck/Reject) and re-attach on reconnect (M3 I2+I3)`
 
 ---
 
-## Task M4.1：Worker `POST /push` + APNs JWT 集成
+## Task M4.1：Worker `POST /push` + APNs JWT
 
 **Files:**
-- Create: `worker/src/apns.ts`（JWT ES256 签名 + HTTP/2 client）
-- Create: `worker/src/push.ts`（handlePush）
-- Modify: `worker/src/index.ts`（路由）
-- Modify: `worker/src/env.ts`（加 APNS_AUTH_KEY/KEY_ID/TEAM_ID/BUNDLE_ID secret 类型）
-- Modify: `worker/src/kv.ts`（加 putApnsToken/markApnsDead helpers）
-- Modify: `worker/src/pair.ts`（在 /pair/claim 收到 ios_apns_token 时存 KV `apns_token:<pair_id>`）
-- Create: `worker/test/push.test.ts`（5 条测试，mock APNs fetch）
+- Create: `worker/src/apns.ts`
+- Create: `worker/src/push.ts`
+- Modify: `worker/src/index.ts`、`worker/src/env.ts`、`worker/src/kv.ts`、`worker/src/pair.ts`
+- Create: `worker/test/push.test.ts`
 
-### `apns.ts` 关键逻辑
+### `apns.ts`
 
-APNs HTTP/2 endpoint：`https://api.push.apple.com/3/device/<token>` (production) 或 `api.sandbox.push.apple.com` (dev)。需要 ES256 JWT：
+ES256 JWT 签名 + HTTP/2 POST 到 `api.push.apple.com`（prod）或 `api.sandbox.push.apple.com`（dev）。
 
 ```typescript
 async function signApnsJwt(env: Env): Promise<string> {
-  // 1. import ES256 private key from env.APNS_AUTH_KEY (PEM)
-  // 2. payload: { iss: env.APNS_TEAM_ID, iat: <unix sec> }
-  // 3. header: { alg: "ES256", kid: env.APNS_KEY_ID, typ: "JWT" }
-  // 4. crypto.subtle.sign with ECDSA SHA-256
-  // 5. base64url encode header + payload + sig
+  const header = { alg: "ES256", kid: env.APNS_KEY_ID, typ: "JWT" };
+  const payload = { iss: env.APNS_TEAM_ID, iat: Math.floor(Date.now() / 1000) };
+  const headerB64 = b64urlEncode(JSON.stringify(header));
+  const payloadB64 = b64urlEncode(JSON.stringify(payload));
+  const signingInput = `${headerB64}.${payloadB64}`;
+
+  const key = await importPemPrivateKey(env.APNS_AUTH_KEY!);
+  const sig = await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(signingInput),
+  );
+  const sigB64 = b64urlEncode(new Uint8Array(sig));
+  return `${signingInput}.${sigB64}`;
 }
 
 export async function pushApns(env: Env, deviceToken: string, payload: object): Promise<{ ok: boolean; status: number; reason?: string }> {
   const jwt = await signApnsJwt(env);
-  const isProd = env.APNS_ENV !== "sandbox";   // 默认 prod；secret 设 sandbox 时用 dev
+  const isProd = env.APNS_ENV !== "sandbox";
   const host = isProd ? "api.push.apple.com" : "api.sandbox.push.apple.com";
   const res = await fetch(`https://${host}/3/device/${deviceToken}`, {
     method: "POST",
     headers: {
-      "authorization": `bearer ${jwt}`,
-      "apns-topic": env.APNS_BUNDLE_ID,
+      authorization: `bearer ${jwt}`,
+      "apns-topic": env.APNS_BUNDLE_ID!,
       "apns-push-type": "alert",
       "apns-priority": "10",
       "content-type": "application/json",
@@ -207,84 +218,112 @@ export async function pushApns(env: Env, deviceToken: string, payload: object): 
 }
 ```
 
-### `push.ts` 关键逻辑
+> `importPemPrivateKey` 用 PKCS8 格式解析 .p8（参考 `crypto.subtle.importKey("pkcs8", ...)`）。
+
+### `push.ts`
 
 ```typescript
 export async function handlePush(req: Request, env: Env): Promise<Response> {
-  // 1. 解 body { pair_id, ts, sig, title, body, deeplink?, thread_id? }
-  // 2. 验签：HMAC-SHA256(pair.mac_device_secret, "push|<pair_id>|<ts>|<title>|<body>")
-  //    与 /pair/revoke 同模式（用 mac_device_secret，因为发起方一定是 Mac）
-  // 3. 检查 ts skew, pair 存在，未 revoked
-  // 4. 检查 apns_dead:<pair_id> → 若存在直接返 410
-  // 5. 拿 apns_token:<pair_id>
-  // 6. 调用 pushApns(env, token, { aps: { alert: { title, body }, "thread-id": thread_id, sound: "default" }, deeplink })
-  // 7. 若 410 → markApnsDead → return 410
-  // 8. 200 { pushed: true }
+  let body: { pair_id?: string; ts?: number; sig?: string; title?: string; body?: string; deeplink?: string; thread_id?: string };
+  try { body = await req.json(); } catch { return Response.json({ error: "invalid_json" }, { status: 400 }); }
+  if (!body.pair_id || typeof body.ts !== "number" || !body.sig || !body.title || !body.body) {
+    return Response.json({ error: "missing_fields" }, { status: 400 });
+  }
+  if (Math.abs(Date.now() - body.ts) > 60_000) return Response.json({ error: "ts_out_of_range" }, { status: 400 });
+
+  const pair = await getPair(env, body.pair_id);
+  if (!pair) return Response.json({ error: "unknown_pair" }, { status: 404 });
+
+  const msg = `push|${body.pair_id}|${body.ts}|${body.title}|${body.body}`;
+  const sigBytes = b64decode(body.sig);
+  const macOk = await hmacVerify(b64decode(pair.mac_device_secret_b64), msg, sigBytes);
+  if (!macOk) return Response.json({ error: "bad_sig" }, { status: 401 });
+
+  if (await isApnsDead(env, body.pair_id)) {
+    return Response.json({ error: "apns_unregistered" }, { status: 410 });
+  }
+
+  const token = await env.PAIRS.get(`apns_token:${body.pair_id}`);
+  if (!token) return Response.json({ error: "apns_token_missing" }, { status: 410 });
+
+  if (!env.APNS_AUTH_KEY || !env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_BUNDLE_ID) {
+    return Response.json({ error: "apns_not_configured" }, { status: 503 });
+  }
+
+  const result = await pushApns(env, token, {
+    aps: { alert: { title: body.title, body: body.body }, "thread-id": body.thread_id, sound: "default" },
+    deeplink: body.deeplink,
+  });
+
+  if (result.status === 410) {
+    await markApnsDead(env, body.pair_id, "unregistered");
+    return Response.json({ error: "apns_unregistered" }, { status: 410 });
+  }
+  if (!result.ok) return Response.json({ error: "turn_unavailable", status: result.status, reason: result.reason }, { status: 503 });
+  return Response.json({ pushed: true });
 }
 ```
 
-### 测试要点
+### Tests（`push.test.ts`，5 条）
 
-- ✅ valid push：mock APNs return 200，验证 worker 返 200
-- ✅ bad_sig → 401
-- ✅ unknown_pair → 404
-- ✅ ts skew > 60s → 400
-- ✅ APNs 返 410 → worker markApnsDead + return 410，第二次同 pair_id 直接 410（不再调 APNs）
+1. valid push（mock APNs 200）→ 200 `{ pushed: true }`
+2. bad sig → 401
+3. unknown pair → 404
+4. ts skew → 400
+5. APNs 返 410 → worker 200 内调 markApnsDead，第二次同 pair_id 直接 410
+
+mock 用 `vitest-pool-workers` 的 `fetchMock` 拦截 `api.sandbox.push.apple.com`。secret 通过 `vitest.config.ts` `miniflare.bindings` 注入测试值（dummy ES256 .p8）。
 
 ### 步骤
 
 1. 写 apns.ts + push.ts
-2. 改 index.ts 加路由
-3. 改 env.ts + kv.ts
-4. 改 pair.ts（claim 时存 ios_apns_token 到 KV）
-5. 写 push.test.ts
-6. `npm test` 全过（27 + 5 ≈ 32）
-7. `npm run typecheck`
-8. commit：`feat(worker): add POST /push with APNs JWT signing and 410 unregistered handling`
+2. 改 env.ts 加 secret 类型
+3. 改 kv.ts 加 putApnsToken / markApnsDead
+4. 改 pair.ts handlePairClaim 收到 ios_apns_token 时 `env.PAIRS.put('apns_token:' + pair_id, ios_apns_token)`
+5. 改 index.ts 加路由
+6. 写 5 条测试
+7. `npm test` 全过（27 + 5 = 32）+ `npm run typecheck`
+8. commit：`feat(worker): add POST /push with APNs ES256 JWT and 410 unregistered handling`
 
 ---
 
 ## Task M4.2：Mac ClipboardBridge
 
 **Files:**
-- Modify: `mac-agent/crates/macagent-core/src/ctrl_msg.rs`（加 ClipboardSet + ClipSource + ClipContent）
+- Modify: `mac-agent/crates/macagent-core/src/ctrl_msg.rs`（加 ClipboardSet 等）
 - Modify: `ios-app/MacIOSWorkspace/CtrlMessage.swift`（同步）
 - Create: `mac-agent/crates/macagent-app/src/clipboard_bridge.rs`
-- Modify: `mac-agent/crates/macagent-app/src/ui.rs`（启动时 spawn ClipboardBridge）
+- Modify: `mac-agent/crates/macagent-app/src/ui.rs`（启动 spawn ClipboardBridge）
+- Modify: `mac-agent/crates/macagent-app/src/session_router.rs`（dispatch ClipboardSet）
 
-### `clipboard_bridge.rs` 关键逻辑
+### `clipboard_bridge.rs` 关键实现
 
 ```rust
-//! Polls NSPasteboard.changeCount every 500ms; on change, push ClipboardSet to ctrl.
-//! Receives remote ClipboardSet (from iOS) and writes to NSPasteboard.
-
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI64, Ordering};
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use macagent_core::ctrl_msg::{CtrlPayload, ClipSource, ClipContent};
 
 const POLL_INTERVAL_MS: u64 = 500;
-const MAX_CONTENT_BYTES: usize = 1024 * 1024;  // 1 MB
+const MAX_BYTES: usize = 1024 * 1024;
 
 pub struct ClipboardBridge {
-    last_change_count: AtomicI64,
+    last_hash: AtomicI64,
     ctrl_tx: mpsc::UnboundedSender<CtrlPayload>,
-    history: tokio::sync::Mutex<Vec<String>>,
 }
 
 impl ClipboardBridge {
-    pub fn new(ctrl_tx: mpsc::UnboundedSender<CtrlPayload>) -> Self { ... }
-    
-    /// 启动后台轮询循环。
-    pub async fn run(self: Arc<Self>) {
+    pub fn new(ctrl_tx: mpsc::UnboundedSender<CtrlPayload>) -> Self {
+        Self { last_hash: AtomicI64::new(0), ctrl_tx }
+    }
+
+    pub async fn run_polling(self: Arc<Self>) {
         let mut tick = interval(Duration::from_millis(POLL_INTERVAL_MS));
         loop {
             tick.tick().await;
-            if let Some(text) = read_pasteboard_if_changed(&self.last_change_count) {
-                if text.len() <= MAX_CONTENT_BYTES {
-                    self.history.lock().await.push(text.clone());
-                    self.history.lock().await.truncate(5);
+            if let Some(text) = read_pasteboard_changed(&self.last_hash) {
+                if text.len() <= MAX_BYTES {
                     let _ = self.ctrl_tx.send(CtrlPayload::ClipboardSet {
                         source: ClipSource::Mac,
                         content: ClipContent::Text { data: text },
@@ -293,397 +332,384 @@ impl ClipboardBridge {
             }
         }
     }
-    
-    /// 收到来自 iOS 的 ClipboardSet → 写 NSPasteboard。
+
+    /// iOS → Mac: write to NSPasteboard via pbcopy.
     pub fn write_remote(&self, content: &ClipContent) {
         match content {
             ClipContent::Text { data } => {
-                // 用 pbcopy 命令最简单（避开 objc binding）
-                let mut child = Command::new("pbcopy")
-                    .stdin(std::process::Stdio::piped())
-                    .spawn()
-                    .ok();
-                if let Some(child) = child.as_mut() {
-                    if let Some(stdin) = child.stdin.as_mut() {
-                        let _ = std::io::Write::write_all(stdin, data.as_bytes());
-                    }
-                    let _ = child.wait();
-                }
+                let _ = pbcopy(data.as_bytes());
+                // 写入后更新 last_hash 防止立刻把刚写的反弹回 iOS
+                self.last_hash.store(simple_hash(data) as i64, Ordering::SeqCst);
             }
         }
     }
 }
 
-/// 用 NSPasteboard 直接读 changeCount + string contents 最准；用 pbpaste 兜底。
-fn read_pasteboard_if_changed(last_count: &AtomicI64) -> Option<String> {
-    // 简单实现：每次跑 pbpaste 拿当前内容；记 hash 判断变化
-    // 更准实现：objc2-app-kit::NSPasteboard::changeCount() 比对
-    // M4 简化版：用 pbpaste；hash 比对（不是真正的 changeCount，但够用）
-    let output = Command::new("pbpaste").output().ok()?;
-    let text = String::from_utf8(output.stdout).ok()?;
-    let hash = simple_hash(&text);
-    let prev = last_count.swap(hash, Ordering::SeqCst);
-    if prev != hash {
-        if text.is_empty() { None } else { Some(text) }
-    } else {
-        None
-    }
+fn read_pasteboard_changed(last_hash: &AtomicI64) -> Option<String> {
+    let out = Command::new("pbpaste").output().ok()?;
+    let text = String::from_utf8(out.stdout).ok()?;
+    if text.is_empty() { return None; }
+    let hash = simple_hash(&text) as i64;
+    let prev = last_hash.swap(hash, Ordering::SeqCst);
+    if prev == hash { None } else { Some(text) }
 }
 
-fn simple_hash(s: &str) -> i64 {
+fn simple_hash(s: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
-    h.finish() as i64
+    h.finish()
+}
+
+fn pbcopy(bytes: &[u8]) -> std::io::Result<()> {
+    let mut child = Command::new("pbcopy").stdin(Stdio::piped()).spawn()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        std::io::Write::write_all(stdin, bytes)?;
+    }
+    child.wait()?;
+    Ok(())
 }
 ```
 
-### 集成到 ui.rs
+### session_router.rs 集成
 
-ui.rs 启动 menu bar 时同时 spawn 一个 ClipboardBridge task，把 ctrl_tx 接到 rtc_glue 的发送通道（与 session_router 共用同一通道）。
-
-session_router 收到 iOS 来的 ClipboardSet → 调 clipboard_bridge.write_remote。
-
-### 测试
-
-- unit test: `simple_hash` 不同字符串产生不同 hash（弱测试，足够）
-- 手动：运行 menu bar agent，复制几段文本到 Mac 剪贴板，看 ctrl_tx 收到 ClipboardSet。M4.7 真机验证全链路。
+handle ctrl `ClipboardSet { source: Ios, content }` → `clipboard_bridge.write_remote(&content)`，**不要**广播给其他 iOS（M4 仅一对 iOS，不存在多对端）。
 
 ### 步骤
 
-1. 改 ctrl_msg.rs 加 ClipboardSet + ClipSource + ClipContent
+1. 改 ctrl_msg.rs 加 ClipboardSet/ClipSource/ClipContent + canonical bytes 路径
 2. 改 CtrlMessage.swift 同步
-3. 写 clipboard_bridge.rs
-4. 改 ui.rs spawn bridge
-5. 改 session_router.rs 路由 ClipboardSet
+3. 写 clipboard_bridge.rs（约 80 行）
+4. 改 ui.rs 启动时 `spawn(bridge.run_polling())` + 把 ClipboardBridge 实例注入 session_router
+5. 改 session_router.rs handle ClipboardSet
 6. cargo test / clippy / fmt
 7. xcodebuild build 过
 8. commit：`feat: add ClipboardBridge with NSPasteboard polling and bidirectional ctrl ClipboardSet`
 
 ---
 
-## Task M4.3：iOS ClipboardPanel
+## Task M4.3：iOS ClipboardPanel + ClipboardStore
 
 **Files:**
 - Create: `ios-app/MacIOSWorkspace/Clipboard/ClipboardStore.swift`
 - Create: `ios-app/MacIOSWorkspace/Clipboard/ClipboardPanel.swift`
-- Modify: `ios-app/MacIOSWorkspace/PairedView.swift`（加 NavigationLink 进 ClipboardPanel）
-- Modify: `ios-app/MacIOSWorkspace/SessionStore.swift`（dispatch ClipboardSet）
+- Modify: `ios-app/MacIOSWorkspace/PairedView.swift`（NavigationLink 入口）
+- Modify: `ios-app/MacIOSWorkspace/SessionStore.swift`（dispatch ClipboardSet 到 ClipboardStore）
 
-### `ClipboardStore.swift` 设计
+### 设计
 
-```swift
-@MainActor
-@Observable
-final class ClipboardStore {
-    /// 最近 5 条接收的剪贴板（最新在前）
-    private(set) var history: [ClipEntry] = []
-    private let glue: RtcGlue?
-    
-    init(glue: RtcGlue?) { self.glue = glue }
-    
-    func handleRemote(_ content: ClipContent) {
-        switch content {
-        case .text(let text):
-            history.insert(.init(text: text, ts: .now), at: 0)
-            history = Array(history.prefix(5))
-            // 自动复制到 UIPasteboard（iOS → 用户在 iOS 剪贴板可粘到任意 App）
-            UIPasteboard.general.string = text
-        }
-    }
-    
-    func sendToMac(_ text: String) async {
-        await glue?.sendCtrl(.clipboardSet(source: .ios, content: .text(text)))
-    }
-}
+`ClipboardStore`（@Observable）维护：
+- `history: [ClipEntry]`（最近 5 条接收，最新在前）
+- `handleRemote(content)` → 写 UIPasteboard.general.string + 入 history
+- `sendToMac(text)` → `glue.sendCtrl(.clipboardSet(source: .ios, content: .text(text)))`
 
-struct ClipEntry: Identifiable {
-    let id = UUID()
-    let text: String
-    let ts: Date
-}
-```
-
-### `ClipboardPanel.swift` 设计
-
-UI 含：
-- "发送到 Mac" 文本输入框 + 按钮（默认拿 UIPasteboard.general.string）
-- "最近接收" 列表（5 条历史，每条点击可复制到 UIPasteboard）
+`ClipboardPanel` UI：
+- "发送到 Mac" TextField（默认拿 UIPasteboard.general.string 预填）+ 按钮
+- "最近从 Mac 收到" 列表（5 条），每条点击 → 重新写 UIPasteboard
 
 ### 步骤
 
-1. 写 ClipboardStore + ClipboardPanel
-2. 改 PairedView 加入口（"剪贴板" NavigationLink）
-3. 改 SessionStore（或新建 RootStore）dispatch ClipboardSet 到 ClipboardStore
+1. 写 ClipboardStore.swift + ClipboardPanel.swift
+2. 改 PairedView 加 NavigationLink "剪贴板" → ClipboardPanel
+3. 改 SessionStore（或 PairedView 内 init）创建 ClipboardStore + 把 ClipboardSet 路由过去
 4. xcodebuild build 过
 5. commit：`feat(ios-app): add ClipboardStore + ClipboardPanel for bidirectional sync`
 
 ---
 
-## Task M4.4：`macagent notify` 子命令
+## Task M4.4：iOS ComposeSheet（CLI 路径）
 
 **Files:**
-- Modify: `mac-agent/crates/macagent-core/src/socket_proto.rs`（加 NotifyRegister/Complete + NotifyAck）
-- Modify: `mac-agent/crates/macagent-app/src/main.rs`（clap 加 `notify` 子命令）
-- Create: `mac-agent/crates/macagent-app/src/notify/mod.rs`
+- Create: `ios-app/MacIOSWorkspace/Compose/ComposeSheet.swift`
+- Modify: `ios-app/MacIOSWorkspace/Term/InputBar.swift`（右端加 ✏️ 按钮）
+- Modify: `ios-app/MacIOSWorkspace/SessionListView.swift::SessionDetailView`（处理 ✏️ 弹 sheet）
 
-### `notify/mod.rs` 关键逻辑
+### `ComposeSheet.swift`
 
-```rust
-use clap::Args;
+完全按 [`ios-input-compose-design.md`](../specs/2026-04-30-ios-input-compose-design.md) §2.1 写：
 
-#[derive(Args, Debug)]
-pub struct NotifyArgs {
-    /// 命令 title 显示在 push 通知里（默认 argv[0]）
-    #[arg(long)]
-    pub title: Option<String>,
-    
-    #[arg(last = true, required = true)]
-    pub command: Vec<String>,
-}
+```swift
+import SwiftUI
 
-pub fn run_main(args: NotifyArgs) -> anyhow::Result<()> {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    rt.block_on(notify_run(args))
-}
+struct ComposeSheet: View {
+    @Binding var text: String
+    let title: String
+    let onSend: (String) -> Void
+    let onCancel: () -> Void
 
-async fn notify_run(args: NotifyArgs) -> anyhow::Result<i32> {
-    let register_id = uuid::Uuid::new_v4().to_string();
-    let started_at_ms = current_ms();
-    let session_hint = std::env::var("MACAGENT_SESSION_ID").ok();
-    
-    // 连 socket（如失败：fallback：仍然 exec 命令、不发 push、stderr 警告）
-    let socket_result = SocketClient::connect().await;
-    let mut socket = match socket_result {
-        Ok(s) => Some(s),
-        Err(e) => {
-            eprintln!("warning: macagent agent socket unreachable ({}), command will run without notification", e);
-            None
-        }
-    };
-    
-    // 发 NotifyRegister，等 NotifyAck
-    if let Some(s) = socket.as_mut() {
-        s.send(P2A::NotifyRegister { register_id: register_id.clone(), argv: args.command.clone(),
-            started_at_ms, session_hint, title: args.title.clone() }).await?;
-        match tokio::time::timeout(Duration::from_secs(3), s.recv()).await {
-            Ok(Ok(A2P::NotifyAck { register_id: _ })) => {},
-            _ => {
-                eprintln!("warning: agent did not ack within 3s, continuing without notification");
-                socket = None;
+    @FocusState private var editorFocused: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                TextEditor(text: $text)
+                    .font(.system(.body, design: .monospaced))
+                    .focused($editorFocused)
+                    .padding(8)
+                    .background(Color(uiColor: .systemBackground))
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        onCancel()
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Send") {
+                        // 强制 commit IME 组字
+                        UIApplication.shared.sendAction(
+                            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil,
+                        )
+                        onSend(text)
+                        text = ""
+                        dismiss()
+                    }
+                    .disabled(text.isEmpty)
+                }
             }
         }
+        .onAppear { editorFocused = true }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
-    
-    // fork+exec+wait the command（继承父进程 stdin/stdout/stderr）
-    let mut child = std::process::Command::new(&args.command[0])
-        .args(&args.command[1..])
-        .spawn()?;
-    let status = child.wait()?;
-    let exit_code = status.code().unwrap_or(-1);
-    let ended_at_ms = current_ms();
-    
-    // 发 NotifyComplete
-    if let Some(s) = socket.as_mut() {
-        let _ = s.send(P2A::NotifyComplete { register_id, exit_code, ended_at_ms }).await;
-    }
-    
-    Ok(exit_code)
 }
 ```
 
+### `InputBar.swift` 加 ✏️
+
+```swift
+// 在 quickKeys 行末追加：
+Button(action: { onCompose() }) {
+    Image(systemName: "square.and.pencil")
+}
+.buttonStyle(.bordered)
+.controlSize(.small)
+```
+
+InputBar 接收新的 closure `onCompose: () -> Void`。
+
+### SessionDetailView 集成
+
+```swift
+@State private var composeText: String = ""
+@State private var presentingCompose: Bool = false
+
+// body 里：
+InputBar(
+    text: $inputText,
+    onSendText: { ... },
+    onKey: { ... },
+    onCompose: { presentingCompose = true },
+)
+.sheet(isPresented: $presentingCompose) {
+    ComposeSheet(
+        text: $composeText,
+        title: "Compose · \(label)",
+        onSend: { sent in
+            Task { await store.sendInput(sid: sid, text: sent) }
+        },
+        onCancel: {
+            // text 已在 sheet 内 dismiss 时清空，无需操作
+        },
+    )
+}
+```
+
+### 单元测试（XCTest 内）
+
+`ComposeSheetTests.swift`（约 40 行）：
+- 注入 text "hello" → 模拟 Send → 断言 onSend 收到精确 "hello"
+- Cancel → 不触发 onSend
+- 含中文 + emoji + 嵌入 `\n` → onSend 收到原样
+
+可用 `@StateObject` 包裹 mock 闭包；不需要 ViewInspector，直接构造 ComposeSheet 调 onSend 即可。
+
 ### 步骤
 
-1. 改 socket_proto.rs 加 3 个变体
-2. 改 main.rs clap dispatch 加 Notify(NotifyArgs)
-3. 写 notify/mod.rs
-4. cargo build / clippy / fmt
-5. cargo test 全过
-6. 手测：`cargo run -p macagent-app -- notify -- echo hello`，agent 没起 → 应见 warning + echo hello + exit 0
-7. commit：`feat(mac-agent): add `macagent notify` subcommand for command completion notifications`
+1. 写 ComposeSheet.swift
+2. 改 InputBar.swift 加 ✏️ 按钮
+3. 改 SessionDetailView 接 sheet
+4. 加 ComposeSheetTests.swift（3 条单测）
+5. xcodebuild test 过（PairKeysTests 4 + 默认 + ComposeSheetTests 3）
+6. commit：`feat(ios-app): add ComposeSheet for multi-line + IME + voice input on CLI path`
+
+> **限制**：M4 只接 CLI 路径（onSend → `Input { sid, TerminalInput::Text }`）。GUI 路径（onSend → `paste_text`）等 M5/M6 再接 InputInjector。
 
 ---
 
-## Task M4.5：NotifyEngine + Watcher
+## Task M4.5：`macagent notify` 子命令
+
+**Files:**
+- Modify: `mac-agent/crates/macagent-core/src/socket_proto.rs`（加 NotifyRegister/Complete + NotifyAck）
+- Modify: `mac-agent/crates/macagent-app/src/main.rs`（clap 子命令）
+- Create: `mac-agent/crates/macagent-app/src/notify/mod.rs`
+
+### `notify/mod.rs` 关键逻辑（约 100 行）
+
+参考 plan §M4.4 旧版骨架：clap Args / fork+exec+wait / Unix socket NotifyRegister + NotifyComplete / 失败兜底（agent socket 不可达时仍执行命令）。
+
+### 步骤
+
+1. 改 socket_proto.rs
+2. 改 main.rs clap dispatch 加 Notify
+3. 写 notify/mod.rs
+4. cargo build / test 全过
+5. 手测：`cargo run -p macagent-app -- notify -- echo hello`，agent 没起 → 应见清晰 warning + echo 输出 + exit 0
+6. commit：`feat(mac-agent): add `macagent notify` subcommand for command completion notifications`
+
+---
+
+## Task M4.6：NotifyEngine + PushClient + 正则 watcher
 
 **Files:**
 - Create: `mac-agent/crates/macagent-app/src/notify_engine.rs`
 - Create: `mac-agent/crates/macagent-app/src/push_client.rs`
 - Modify: `mac-agent/crates/macagent-app/src/agent_socket.rs`（处理 NotifyRegister/Complete）
-- Modify: `mac-agent/crates/macagent-app/src/session_router.rs`（dispatch WatchSession/UnwatchSession + 监听 TermDelta 跑 regex）
-- Modify: `mac-agent/crates/macagent-core/src/ctrl_msg.rs`（加 WatchSession/UnwatchSession/WatchersList/WatcherInfo/WatcherMatched）
+- Modify: `mac-agent/crates/macagent-app/src/session_router.rs`（dispatch WatchSession 等 + 监听 TermDelta 跑 regex）
+- Modify: `mac-agent/crates/macagent-core/src/ctrl_msg.rs`（加 watcher 相关 case）
 
-### `notify_engine.rs`
+### `push_client.rs`（约 60 行）
 
-维护两类对象：
-1. **In-flight notify commands**：`HashMap<register_id, NotifyEntry { argv, started_at, session_hint }>`，收到 NotifyComplete → 算 duration → 调 push_client.send_push(title, body, deeplink_for_session_hint?)
-2. **Per-session watchers**：`HashMap<sid, Vec<Watcher { id, regex, name, hits, last_match }>>`，session_router 喂入新 line（解 TermDelta 中文本）→ 对每个 watcher 做 `regex::Regex::is_match` → 命中 → push_client + ctrl WatcherMatched
+参考旧版骨架。HMAC 签名调 Worker `/push`。
 
-### `push_client.rs`
-
-发 HMAC 签名请求到 Worker `/push`：
+### `notify_engine.rs`（约 200 行）
 
 ```rust
-pub struct PushClient {
-    worker_url: String,
-    pair_id: String,
-    mac_device_secret: Vec<u8>,
+pub struct NotifyEngine {
+    push_client: Arc<PushClient>,
+    in_flight: Arc<Mutex<HashMap<String /*register_id*/, NotifyEntry>>>,
+    watchers: Arc<RwLock<HashMap<String /*sid*/, Vec<Watcher>>>>,
 }
 
-impl PushClient {
-    pub async fn send(&self, title: &str, body: &str, deeplink: Option<&str>, thread_id: Option<&str>) -> Result<()> {
-        let ts = current_ms();
-        let msg = format!("push|{}|{}|{}|{}", self.pair_id, ts, title, body);
-        let sig = base64::encode(hmac_sign(&self.mac_device_secret, msg.as_bytes()));
-        reqwest::Client::new()
-            .post(format!("{}/push", self.worker_url))
-            .json(&serde_json::json!({
-                "pair_id": self.pair_id,
-                "ts": ts,
-                "sig": sig,
-                "title": title,
-                "body": body,
-                "deeplink": deeplink,
-                "thread_id": thread_id,
-            }))
-            .send().await?
-            .error_for_status()?;
-        Ok(())
+struct Watcher {
+    id: String,
+    regex: Regex,
+    name: String,
+    hits: u32,
+    last_match: Option<String>,
+}
+
+impl NotifyEngine {
+    pub async fn register_notify(&self, p2a: NotifyRegister) { /* push to in_flight */ }
+    pub async fn complete_notify(&self, p2a: NotifyComplete) {
+        if let Some(entry) = self.in_flight.lock().await.remove(&p2a.register_id) {
+            let title = entry.title.clone().unwrap_or_else(|| entry.argv[0].clone());
+            let duration = format_duration(p2a.ended_at_ms - entry.started_at_ms);
+            let body = format!("exit {} in {}", p2a.exit_code, duration);
+            let deeplink = entry.session_hint.as_ref().map(|sid| format!("macagent://session/{}", sid));
+            self.push_client.send(&title, &body, deeplink.as_deref(), entry.session_hint.as_deref()).await.ok();
+        }
+    }
+
+    pub async fn add_watcher(&self, sid: String, watcher_id: String, regex: String, name: String) -> Result<()> { /* compile regex */ }
+    pub async fn remove_watcher(&self, sid: &str, watcher_id: &str) {}
+    pub async fn list_watchers(&self, sid: &str) -> Vec<WatcherInfo> {}
+
+    /// 调用方式：session_router 在每条 producer TermDelta（含新增的 line.runs.text）后，
+    /// 把每行的纯文本喂进来。
+    pub async fn feed_session_line(&self, sid: &str, line_text: &str, ctrl_tx: &mpsc::UnboundedSender<CtrlPayload>) {
+        let mut watchers = self.watchers.write().await;
+        if let Some(list) = watchers.get_mut(sid) {
+            for w in list.iter_mut() {
+                if w.regex.is_match(line_text) {
+                    w.hits += 1;
+                    w.last_match = Some(line_text.to_string());
+                    let _ = self.push_client.send(
+                        &format!("{} matched", w.name),
+                        line_text,
+                        Some(&format!("macagent://session/{}", sid)),
+                        Some(sid),
+                    ).await;
+                    let _ = ctrl_tx.send(CtrlPayload::WatcherMatched {
+                        sid: sid.to_string(),
+                        watcher_id: w.id.clone(),
+                        line_text: line_text.to_string(),
+                    });
+                }
+            }
+        }
     }
 }
 ```
+
+### session_router.rs 集成
+
+handle ctrl `WatchSession { sid, watcher_id, regex, name }` → `notify_engine.add_watcher(...)` → ctrl 推 `WatchersList { sid, watchers }`。
+
+producer TermDelta 进来时（每条变化的 line），调 `notify_engine.feed_session_line(sid, line.runs.into_iter().map(|r|r.text).join(""), &ctrl_tx)`。
+
+### Tests
+
+`notify_engine` 单测（约 100 行）：
+- add/remove/list watcher
+- feed_session_line 命中 regex 触发 push（mock push_client）
+- complete_notify 计算 duration + 调 push
 
 ### 步骤
 
 1. 改 ctrl_msg.rs 加 watcher 相关 case + iOS 同步
-2. 改 socket_proto.rs（M4.4 已加）
-3. 改 agent_socket.rs handle NotifyRegister/Complete
-4. 写 push_client.rs
-5. 写 notify_engine.rs
-6. 改 session_router.rs：
-   - 处理 WatchSession/UnwatchSession ctrl 消息
-   - 在 producer TermDelta 转发给 iOS 的同时也喂给 NotifyEngine 跑 regex
-7. cargo test 全过
-8. commit：`feat(mac-agent): add NotifyEngine (regex watchers + notify completion) and push_client`
+2. 写 push_client.rs + 单测
+3. 写 notify_engine.rs + 单测
+4. 改 agent_socket.rs handle NotifyRegister/Complete
+5. 改 session_router.rs：watcher ctrl + TermDelta feed
+6. cargo test 全过
+7. commit：`feat(mac-agent): add NotifyEngine (regex watchers + notify completion) and push_client`
 
 ---
 
-## Task M4.6：iOS APNs 集成
+## Task M4.7：iOS APNs PushHandler + WatchersView
 
 **Files:**
-- Modify: `ios-app/MacIOSWorkspace.entitlements`（如不存在则在 pbxproj 中创建）
+- Modify: `ios-app/MacIOSWorkspace.entitlements`（如不存在则在 pbxproj 加）
 - Create: `ios-app/MacIOSWorkspace/Notify/PushHandler.swift`
-- Modify: `ios-app/MacIOSWorkspace/MacIOSWorkspaceApp.swift`（UIApplicationDelegate 钩入）
+- Modify: `ios-app/MacIOSWorkspace/MacIOSWorkspaceApp.swift`（UIApplicationDelegateAdaptor）
 - Create: `ios-app/MacIOSWorkspace/Notify/WatcherStore.swift`
 - Create: `ios-app/MacIOSWorkspace/Notify/WatchersView.swift`
-- Modify: `ios-app/MacIOSWorkspace/SessionListView.swift::SessionDetailView`（加 watchers 入口按钮）
+- Modify: `ios-app/MacIOSWorkspace/SessionListView.swift::SessionDetailView`（NavigationLink "正则提醒"）
 
-### Entitlement & 权限
+### Entitlement & Capability
 
-`.entitlements`：
-```xml
-<key>aps-environment</key>
-<string>development</string>   <!-- 真机 release 改 production -->
-```
+`.entitlements` 加 `aps-environment = development`（真机 release 改 production）。Info.plist 不需要 push 单独 key。**Xcode 里加 Push Notifications Capability** 用户介入项。
 
-Info.plist (via pbxproj `INFOPLIST_KEY_*`)：
-- `NSUserNotificationsUsageDescription`：理由文本
+Apple Developer Portal 用户需要：
+- 给 App ID 启用 Push Notifications
+- 创建 APNs Auth Key（.p8）→ Key ID + Team ID
 
-App Store Connect / Developer Portal：
-- 创建 APNs Auth Key（.p8）→ 拿 Key ID + Team ID
-- 启用 App ID 的 Push Notification capability
+### PushHandler
 
-### `PushHandler.swift`
-
-```swift
-import UserNotifications
-import UIKit
-
-@MainActor
-final class PushHandler: NSObject, ObservableObject, UNUserNotificationCenterDelegate, UIApplicationDelegate {
-    @Published var deviceToken: String?
-    
-    func requestAuthorization() async {
-        let center = UNUserNotificationCenter.current()
-        center.delegate = self
-        do {
-            let granted = try await center.requestAuthorization(options: [.alert, .badge, .sound])
-            if granted {
-                await UIApplication.shared.registerForRemoteNotifications()
-            }
-        } catch {
-            print("UNUserNotificationCenter authorization error:", error)
-        }
-    }
-    
-    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken token: Data) {
-        let hex = token.map { String(format: "%02x", $0) }.joined()
-        deviceToken = hex
-        // 重新调 PairingFlow 把新 token 同步到 Worker：POST /pair/refresh-apns?
-        // M4 简化：要求用户重新配对一次（或后续 worker 加 refresh-apns 端点）
-        print("APNs token:", hex)
-    }
-    
-    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        print("APNs register failed:", error)
-    }
-    
-    // Foreground notification handling
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        return [.banner, .sound]
-    }
-    
-    // Tap handling - deep-link to session
-    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        let userInfo = response.notification.request.content.userInfo
-        if let deeplink = userInfo["deeplink"] as? String {
-            // route via NotificationCenter post → some root view subscribes
-            NotificationCenter.default.post(name: .macagentDeepLink, object: deeplink)
-        }
-    }
-}
-
-extension Notification.Name {
-    static let macagentDeepLink = Notification.Name("macagentDeepLink")
-}
-```
+参考 旧版骨架 + WatcherStore（@Observable，订阅 ctrl `WatchersList` / `WatcherMatched`）+ WatchersView UI（list + add regex form）。
 
 ### 步骤
 
-1. 在 Xcode 加 entitlement 文件（手改 pbxproj 或用户在 Xcode 里加 capability）
-2. 写 PushHandler.swift
+1. 加 entitlement + Capability
+2. 写 PushHandler.swift + WatcherStore.swift + WatchersView.swift
 3. 改 MacIOSWorkspaceApp.swift 加 UIApplicationDelegateAdaptor
-4. 写 WatcherStore + WatchersView
-5. 改 SessionDetailView 加 watcher 入口
-6. xcodebuild build 过（不带 push 真测）
-7. commit：`feat(ios-app): add PushHandler (APNs entitlement + token register) and watchers UI`
-
-> **用户需要做**：在 Xcode 里 Capability 加 Push Notifications；Apple Developer Portal 配 App ID + Push key。M4.7 联调时一并处理。
+4. 改 SessionDetailView 加 NavigationLink "正则提醒" → WatchersView
+5. xcodebuild build 过（不带 push 真测）
+6. commit：`feat(ios-app): add PushHandler (APNs entitlement + token register) and watchers UI`
 
 ---
 
-## Task M4.7：真机端到端 APNs + watcher 联调
+## Task M4.8：真机端到端
 
 需要：
-1. 用户在 Apple Developer 创建 APNs Auth Key（.p8）→ 拿 Key ID + Team ID
-2. wrangler 配 secret：
-```bash
-echo "<paste .p8 content>" | npx wrangler secret put APNS_AUTH_KEY
-echo "<key_id>" | npx wrangler secret put APNS_KEY_ID
-echo "<team_id>" | npx wrangler secret put APNS_TEAM_ID
-echo "com.hemory.macagent" | npx wrangler secret put APNS_BUNDLE_ID    # iOS app bundle id
-echo "sandbox" | npx wrangler secret put APNS_ENV                      # dev 期间
-npx wrangler deploy
-```
-3. iPhone 真机：iOS app 新版（含 APNs）→ 重新配对（让 Worker 拿到 ios_apns_token）→ Connect WebRTC
+1. APNs Auth Key（.p8 / Key ID / Team ID）
+2. wrangler secret 配齐 + deploy
+3. iPhone 重新配对让 Worker 拿到 ios_apns_token
 
-### 验收
+### 验收（5 类）
 
-1. **clipboard**：Mac 复制 "hello" → iPhone PairedView → Clipboard 入口看到 "hello" 出现 + UIPasteboard.string == "hello"
-2. **clipboard reverse**：iPhone 输入 "world" → 点"发送到 Mac" → Mac 终端 `pbpaste` 输出 "world"
-3. **notify**：Mac 终端 `cargo run -p macagent-app -- notify -- sleep 5; echo done` → iPhone 5 秒后收到推送 "done | exit 0 in 5s"
-4. **watcher**：iOS 设 watcher `regex:"error.*"` → producer 输出包含 "error: file not found" → iPhone 收到推送 + ctrl WatcherMatched 在 watchers UI 实时显示
-5. **deep-link**：点击推送 → iOS app 自动跳到对应 session 的 TermView
+1. **clipboard auto sync**：Mac `pbcopy "hello"` → iPhone Clipboard 入口看到 "hello" + UIPasteboard.string == "hello"
+2. **clipboard reverse**：iPhone "发送到 Mac" "world" → Mac 终端 `pbpaste` 输出 "world"
+3. **ComposeSheet IME**：iPhone 装微信键盘 → SessionDetailView ✏️ → 切微信键盘 → 按 🎤 说"git status" → Send → 终端收到并执行
+4. **ComposeSheet 中文**：系统拼音键盘 → ComposeSheet 输入"你好世界" → Send → PTY 收到 6 字节正确 UTF-8
+5. **notify**：Mac 终端 `cargo run -p macagent-app -- notify -- sleep 5; echo done` → iPhone 5 秒后收到推送 "done | exit 0 in 5s"
+6. **watcher**：iOS 设 watcher `regex:"error.*"` → producer 输出 "error: file not found" → iPhone 推送 + WatchersView 实时显示
+7. **deep-link**：点击推送 → iOS app 自动跳到对应 session 的 SessionDetailView
 
 ### 步骤
 
@@ -691,37 +717,38 @@ npx wrangler deploy
 
 ---
 
-## Task M4.8：M4 final review
+## Task M4.9：M4 final review
 
-dispatch reviewer subagent，按 M3 final review 同样模式审 commits `52255d8..HEAD`。
+dispatch reviewer subagent，按 M3 final review 模式审 commits `f0464d5..HEAD`。
 
 ---
 
 ## M4 验收清单
 
 - [ ] worker npm test 全绿（27 + 5 = 32）
-- [ ] mac-agent cargo test --workspace 全绿（核心 + app 加新单测）
-- [ ] ios-app xcodebuild test 全绿
+- [ ] mac-agent cargo test --workspace 全绿
+- [ ] ios-app xcodebuild test 全绿（含 ComposeSheetTests 3 条）
 - [ ] CI 三条 workflow 全绿
-- [ ] 真机：剪贴板 Mac→iOS auto sync ✓
-- [ ] 真机：剪贴板 iOS→Mac via "Send to Mac" 按钮 ✓
-- [ ] 真机：`notify -- sleep 5; echo done` 后 iPhone 收推送 ✓
-- [ ] 真机：watcher regex 命中 → 推送 + UI 实时显示 ✓
-- [ ] 真机：点推送 deep-link 进 TermView ✓
+- [ ] 真机：剪贴板双向 ✓
+- [ ] 真机：notify 推送 ✓
+- [ ] 真机：watcher regex 推送 ✓
+- [ ] 真机：deep-link ✓
+- [ ] 真机：微信键盘语音 → CLI ✓
+- [ ] 真机：中文 IME → CLI ✓
 
 ---
 
 ## 自检（写完 plan 后做的）
 
-1. **Spec 覆盖**：spec §3.1 ClipboardBridge / NotifyEngine、§3.2 ClipboardPanel / PushHandler、§3.3 /push、§4.5 / §4.6 / §7 M4 → 全部映射到 M4.0-M4.7。
-2. **占位符扫描**：M4.6 entitlement 添加可能需用户介入（同 M2.4 SPM 风格）；其余无 TBD/TODO。
-3. **类型一致性**：CtrlPayload Mac/iOS 同步；canonical_bytes M3.fix 已递归排序，新增 case 自动受益。
-4. **M3 debt 在 M4.0 清掉**，避免污染 M4。
+1. **Spec 覆盖**：主 spec §3.1 ClipboardBridge / NotifyEngine、§3.2 ClipboardPanel / ComposeSheet / PushHandler、§3.3 /push、§4.5 / §4.6 / §7 M4 → 全部映射；独立 spec ios-input-compose-design.md §2 / §3 → ComposeSheet (M4.4) 落地。
+2. **占位符扫描**：M4.7 entitlement 添加 + Apple Developer Portal 操作需用户介入（已显式标注）；其余无 TBD/TODO。
+3. **类型一致性**：CtrlPayload Mac/iOS 同步；ComposeSheet 复用 M3.1 已锁定的 `Input { TerminalInput::Text }`，无新协议。
+4. **范围一致**：M4 ComposeSheet 仅 CLI 路径；GUI 路径在 M5/M6 接 InputInjector.paste_text（与独立 spec §6 milestone 一致）。
 5. **风险**：
-   - APNs Auth Key 需用户在 Apple Developer 操作；若无 Apple Developer 账号会卡住
-   - iOS Push entitlement 真机需要 provisioning profile，TestFlight build 比较稳
-   - NSPasteboard 直接绑定（objc2-app-kit）麻烦；M4.2 退到 pbpaste/pbcopy 子进程是务实简化
-   - watcher regex 性能：每条 TermDelta 行 × N watchers，无问题（M4 上限 8 sessions × ~10 watchers × <1ms 正则）
+   - APNs Auth Key 需 Apple Developer 账号；TestFlight 真机验证更稳
+   - NSPasteboard 用 pbpaste/pbcopy 子进程：足够文本同步
+   - watcher regex 性能：可接受
+   - ComposeSheet 中 IME 组字未提交时点 Send：通过 `resignFirstResponder` 强制 commit；UIKit 默认行为兜底
 
 ---
 
@@ -729,7 +756,7 @@ dispatch reviewer subagent，按 M3 final review 同样模式审 commits `52255d
 
 执行选项：
 
-1. **Subagent-Driven**（推荐）——延续 M0-M3 节奏；M4.0/M4.4/M4.5 自动化高；M4.6 含用户介入（entitlement）；M4.7 真机
+1. **Subagent-Driven**（推荐）——延续 M0-M3 节奏；M4.0-M4.6 自动化高；M4.7 entitlement + APNs 需用户介入；M4.8 真机
 2. **Inline Execution**
 
-请用户选 1 或 2 后再开始执行。
+请用户选 1 或 2。

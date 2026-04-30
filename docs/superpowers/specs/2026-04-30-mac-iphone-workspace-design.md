@@ -39,7 +39,8 @@
 ### 1.4 非目标
 
 - 不做完整桌面镜像、多显示器、文件拖拽、企业 SSO。
-- 不处理中文 IME、子窗口、菜单、文件选择器（推迟到 B2 档）。
+- 不处理子窗口、菜单、文件选择器（推迟到 B2 档）。
+- iOS 端通过标准 `UITextView`（SwiftUI `TextEditor`）原生支持中文 IME 与系统/第三方键盘语音输入，参见独立 spec [`2026-04-30-ios-input-compose-design.md`](2026-04-30-ios-input-compose-design.md)。
 - 不支持会话穿越 **macOS** 重启（PTY 仅从 RtcPeer detach，未脱离 Agent 进程）。
 - UI 不展示多 Mac / 多 iOS 拓扑（数据模型留出空间，但 UI 仅 1:1）。
 - 不通过我们的 Workers 中继媒体流量（仅信令 + APNs + TURN 凭证；媒体走 P2P/TURN 直连）。
@@ -275,7 +276,7 @@
 #### TermView（M3 v2，取代旧 CliView）
 - **不依赖 SwiftTerm**——producer 端 alacritty 已经把 ANSI 解析完了，iOS 收到的是结构化 `TermSnapshot/Delta { lines: [{ index, runs: [{text, fg, bg, bold, italic, underline, inverse}], wrapped }] }`。
 - 用 SwiftUI `Text` + `AttributedString`（或 `LazyVStack` 行渲染）按 run 上色拼接。
-- 底部 `InputBar` 子视图：软键盘文字输入 → `Input { TerminalInput::Text }`；快捷键栏（Tab / Esc / Ctrl+C / Ctrl+D / Arrow×4 / Ctrl+R / 等）→ `Input { TerminalInput::Key }`；长文本批量粘贴框（防中文 IME 卡顿）。
+- 底部 `InputBar` 子视图：软键盘文字输入 → `Input { TerminalInput::Text }`；快捷键栏（Tab / Esc / Ctrl+C / Ctrl+D / Arrow×4 / Ctrl+R / 等）→ `Input { TerminalInput::Key }`；右端 ✏️ 按钮打开 `ComposeSheet`（多行 / 中文 IME / 第三方键盘语音输入；参见 ios-input-compose-design.md）。
 - 离屏 `HistoryView` 子视图：纯文本 `ScrollView`，从 `TermHistorySnapshot/Append` 累积。
 - `UIKeyCommand` 把硬件键盘的 Tab / Esc / Ctrl+C / 方向键也映射成对应 `TerminalInput::Key`。
 - `geometry` 改变时触发 `Resize { sid, cols, rows }` 上报。
@@ -285,6 +286,13 @@
 - 显示 active sessions（来自 `SessionStore.list()`）→ 点击进入对应 TermView。
 - 状态指示：streaming / not streaming / 已退出。
 
+#### ComposeSheet（详细见 [`2026-04-30-ios-input-compose-design.md`](2026-04-30-ios-input-compose-design.md)）
+- 多行 `TextEditor` sheet，顶部 title bar + Cancel，底部 Send 按钮。
+- 由 CliView 与 GuiStreamView 共用：仅 `onSend` 闭包不同（CLI → `pty/<id>` 字节流 / GUI → `input.paste_text`）。
+- 中文 IME / 系统语音 / 第三方键盘语音（微信 / 搜狗 / 讯飞）全部由 UIKit 标准 `UITextView` 天然支持，本组件无需感知输入法。
+- 不做自动 `\n`、不做命令历史、不做模板（明确简化）。Send 后清空 + dismiss；Cancel 不发送、不持久化。
+- M4 仅落地 CLI 路径；GUI 路径在 M5/M6 时与 InputInjector.paste_text 一并接通。
+
 #### GuiStreamView
 - 用 `RTCMTLVideoView` 渲染 active 流。手势识别映射：
   - 单指点击 → `click(left, x, y)`。
@@ -293,6 +301,7 @@
   - Pinch → 保留（v0.1 no-op；未来可映射 `Cmd+=`/`Cmd+-`，但目前显式按钮覆盖）。
   - 软键盘 → `type_text`。
   - `+ / − / ⌖` 按钮 → `key_combo([cmd], "=" / "-" / "0")`。
+  - ✏️ 按钮 → 打开 `ComposeSheet`（共用 CliView 的 IME / 语音多行编辑组件）→ Send 时发 `input.paste_text`（M5/M6 实现，M4 仅 CLI 路径）。
 - 在出现和旋转时上报可渲染视口尺寸（point × scale）；作为 `switch_active` / `supervise_*` 的一部分发送。
 
 #### ClipboardPanel
@@ -442,6 +451,7 @@ iOS                            Mac Agent (menu bar)            Producer (Termina
 - 离屏 history（>scrollback 行数被推出 viewport 的）由 `TermHistorySnapshot/Append` 单独通道推；iOS 端的 HistoryView 累积。
 - 用户在 Mac Terminal 里输入 + iOS 也在输入：两路字节都进 PTY stdin，**交错混合**——这是有意设计（hurryvc 风格的 chaos）。iOS UI 显示一个不显眼标签 `🟢 Mac 端有人` 提示。
 - 产品特性"60s 断网重连"在 v2 模型里**自动满足**：alacritty Term 一直在维护，无需 replay。
+- `Input { sid, payload: TerminalInput::Text }` 既承载 inline live-typing（每个按键即发），也承载 ComposeSheet Send 整段字节，传输层无差别。
 
 ### 4.4 GUI 监管与流送
 
@@ -576,7 +586,7 @@ iOS 旋转 / Stage Manager 改尺寸 → 通过 `ctrl: {viewport_changed, sup, v
 | **M1 · 配对 + 控制平面** | PairAuth + SignalingClient + Worker `/pair/*` + Durable Object + KV；ECDH 密钥交换；签名 `ctrl` 通道；菜单栏 QR；iOS 扫码流程 | 真 iPhone 配对真 Mac 成功；两端重启都能恢复；revoke 流程跑通。 |
 | **M2 · WebRTC 媒体面打通** | webrtc-rs RtcPeer、Cloudflare Calls TURN 凭证、ICE/DTLS 建立、空 `ctrl` DataChannel 心跳 | 跨 NAT WebRTC 建连成功；ICE restart 通过。 |
 | **M3 · CLI 通道**（核心交付物 #1，v2 producer 模型） | `macagent run` producer 子命令；alacritty 解析 PTY；Unix socket 报到；Mac Agent 端 ProducerRegistry + AgentSocket + Launcher（含 launchers.json5 + AppleScript）+ SessionRouter；iOS TermView（不依赖 SwiftTerm，直接渲染 lines/runs）+ SessionListView | 在 iPhone / iPad 上跑 Claude Code / Codex / shell；Mac 端用户**看得见** Terminal 窗口；iOS 断网 60 s 重连后 attach 即取最新 grid（无需 replay 历史字节）；8 个并发会话稳定；用户 Cmd+W 关 Terminal 等于杀 session；用户 + iOS 同时输入字节交错入 PTY（chaos 可接受）。 |
-| **M4 · 剪贴板 + 通知** | ClipboardBridge 双向、iOS Clipboard panel、`notify` shim 二进制、NotifyEngine 正则 watcher、Worker `/push` + APNs | `notify pnpm build` 推送可触达，含 deep-link；5 个正则场景测试通过。 |
+| **M4 · 剪贴板 + 通知 + iOS 输入增强** | ClipboardBridge 双向、iOS Clipboard panel、`macagent notify` 子命令、NotifyEngine 正则 watcher、Worker `/push` + APNs；iOS ComposeSheet（多行 / 中文 IME / 第三方键盘语音）落地 CLI 路径 | `macagent notify -- pnpm build` 推送可触达，含 deep-link；5 个正则场景测试通过；真 iPhone + 微信键盘语音输入"git status" → 终端正确执行；中文文本通过 ComposeSheet 输入到 PTY 不丢字。 |
 | **M5 · GUI 监管 v0**（核心交付物 #2） | GuiCapture + ScreenCaptureKit 单窗口 + VideoToolbox H.264 + WebRTC video track；仅 `supervise_existing`；只看不点 | 在 iPhone / iPad 上看到 Chrome 30 fps；switch / remove 流程跑通。 |
 | **M6 · 输入注入 + 内容缩放** | InputInjector：CGEvent click/scroll/keyboard、`key_combo`、`paste_text`；`input` 通道；Accessibility onboarding | 点 Chrome 网页按钮、滚动、长文本粘贴、对 Chrome 与 Electron 系 App 跑 Cmd+/Cmd-/Cmd0。 |
 | **M7 · 启动接管 + 多监管切换 + 窗口适配** | `supervise_launch`、≈ 200 ms 切换、armed 缩略图、AX `fit_window` + `restore_window`、视口感知比例 | 从 iPhone / iPad 启动 Claude Desktop，监管 3 个 App 流畅切换，窗口比例匹配设备视口（覆盖 iPhone 竖横屏与 iPad Split View）。 |
