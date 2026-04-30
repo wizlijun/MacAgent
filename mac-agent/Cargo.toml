@@ -31,6 +31,10 @@ alacritty_terminal = "0.25.1"
 portable-pty = "0.9"
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
+json5 = "0.4"
+uuid = { version = "1.10", features = ["v4"] }
+dirs = "5"
+shell-escape = "0.1"
 
 [profile.dev]
 opt-level = 0

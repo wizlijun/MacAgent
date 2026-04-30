@@ -30,6 +30,10 @@ portable-pty = { workspace = true }
 alacritty_terminal = { workspace = true }
 bytes = { workspace = true }
 libc = { workspace = true }
+json5 = { workspace = true }
+uuid = { workspace = true }
+dirs = { workspace = true }
+shell-escape = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
