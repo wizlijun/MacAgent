@@ -14,7 +14,9 @@ use tokio::sync::mpsc as async_mpsc;
 use crate::agent_socket::AgentSocket;
 use crate::clipboard_bridge::ClipboardBridge;
 use crate::launcher::LauncherConfig;
+use crate::notify_engine::NotifyEngine;
 use crate::producer_registry::ProducerRegistry;
+use crate::push_client::PushClient;
 use crate::rtc_glue::{run_glue, GlueConfig, GlueState};
 use crate::session_router::{run_socket_event_loop, SessionRouter};
 use crate::{keychain, pair_qr};
@@ -144,17 +146,37 @@ impl MacAgentApp {
             });
         }
 
+        // PushClient + NotifyEngine (created now from persisted pair record if available).
+        let push_client: Option<std::sync::Arc<PushClient>> =
+            if let PairState::Paired { ref record } = state {
+                match PushClient::new(
+                    record.worker_url.clone(),
+                    record.pair_id.clone(),
+                    &record.mac_device_secret_b64,
+                ) {
+                    Ok(pc) => Some(std::sync::Arc::new(pc)),
+                    Err(e) => {
+                        eprintln!("[ui] PushClient init failed (push disabled): {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+        let notify_engine = NotifyEngine::new(push_client, ctrl_send_tx.clone());
+
         let router = std::sync::Arc::new(SessionRouter::new(
             std::sync::Arc::clone(&registry),
             ctrl_send_tx.clone(),
             std::sync::Arc::clone(&launcher_config),
             clipboard_bridge,
+            std::sync::Arc::clone(&notify_engine),
         ));
 
         // Start AgentSocket and wire socket events → router
         let router_for_socket = std::sync::Arc::clone(&router);
         runtime.spawn(async move {
-            match AgentSocket::start(registry).await {
+            match AgentSocket::start(registry, notify_engine).await {
                 Ok(socket) => {
                     run_socket_event_loop(socket.events_rx, router_for_socket).await;
                 }

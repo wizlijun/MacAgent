@@ -229,6 +229,18 @@ enum ClipContent: Codable, Equatable {
 }
 
 // ---------------------------------------------------------------------------
+// Watcher types (M4.6)
+// ---------------------------------------------------------------------------
+
+struct WatcherInfo: Codable, Equatable {
+    let id: String
+    let regex: String
+    let name: String
+    let hits: UInt32
+    let last_match: String?
+}
+
+// ---------------------------------------------------------------------------
 // CtrlPayload
 // ---------------------------------------------------------------------------
 
@@ -269,6 +281,12 @@ enum CtrlPayload: Codable, Equatable {
     // M4: clipboard
     case clipboardSet(source: ClipSource, content: ClipContent)
 
+    // M4.6: notify watchers
+    case watchSession(sid: String, watcherId: String, regex: String, name: String)
+    case unwatchSession(sid: String, watcherId: String)
+    case watchersList(sid: String, watchers: [WatcherInfo])
+    case watcherMatched(sid: String, watcherId: String, lineText: String)
+
     // MARK: - Coding keys
 
     private enum CodingKeys: String, CodingKey {
@@ -279,6 +297,7 @@ enum CtrlPayload: Codable, Equatable {
         case revision, cols, rows, cursor_row, cursor_col, cursor_visible, title, lines
         case payload
         case source, content
+        case watcher_id, regex, name, watchers, line_text
     }
 
     // MARK: - canonical bytes
@@ -371,6 +390,20 @@ enum CtrlPayload: Codable, Equatable {
             let contentData = try encoder.encode(content)
             let contentObj = try JSONSerialization.jsonObject(with: contentData)
             return try CanonicalJSON.encode(["type": "clipboard_set", "source": sourceObj, "content": contentObj])
+        case .watchSession(let sid, let watcherId, let regex, let name):
+            return try CanonicalJSON.encode(["type": "watch_session", "sid": sid,
+                                             "watcher_id": watcherId, "regex": regex, "name": name])
+        case .unwatchSession(let sid, let watcherId):
+            return try CanonicalJSON.encode(["type": "unwatch_session", "sid": sid,
+                                             "watcher_id": watcherId])
+        case .watchersList(let sid, let watchers):
+            let encoder = JSONEncoder()
+            let watchersData = try encoder.encode(watchers)
+            let watchersObj = try JSONSerialization.jsonObject(with: watchersData)
+            return try CanonicalJSON.encode(["type": "watchers_list", "sid": sid, "watchers": watchersObj])
+        case .watcherMatched(let sid, let watcherId, let lineText):
+            return try CanonicalJSON.encode(["type": "watcher_matched", "sid": sid,
+                                             "watcher_id": watcherId, "line_text": lineText])
         }
     }
 
@@ -462,6 +495,25 @@ enum CtrlPayload: Codable, Equatable {
             try c.encode("clipboard_set", forKey: .type)
             try c.encode(source, forKey: .source)
             try c.encode(content, forKey: .content)
+        case .watchSession(let sid, let watcherId, let regex, let name):
+            try c.encode("watch_session", forKey: .type)
+            try c.encode(sid, forKey: .sid)
+            try c.encode(watcherId, forKey: .watcher_id)
+            try c.encode(regex, forKey: .regex)
+            try c.encode(name, forKey: .name)
+        case .unwatchSession(let sid, let watcherId):
+            try c.encode("unwatch_session", forKey: .type)
+            try c.encode(sid, forKey: .sid)
+            try c.encode(watcherId, forKey: .watcher_id)
+        case .watchersList(let sid, let watchers):
+            try c.encode("watchers_list", forKey: .type)
+            try c.encode(sid, forKey: .sid)
+            try c.encode(watchers, forKey: .watchers)
+        case .watcherMatched(let sid, let watcherId, let lineText):
+            try c.encode("watcher_matched", forKey: .type)
+            try c.encode(sid, forKey: .sid)
+            try c.encode(watcherId, forKey: .watcher_id)
+            try c.encode(lineText, forKey: .line_text)
         }
     }
 
@@ -568,6 +620,30 @@ enum CtrlPayload: Codable, Equatable {
             self = .clipboardSet(
                 source: try c.decode(ClipSource.self, forKey: .source),
                 content: try c.decode(ClipContent.self, forKey: .content)
+            )
+
+        case "watch_session":
+            self = .watchSession(
+                sid: try c.decode(String.self, forKey: .sid),
+                watcherId: try c.decode(String.self, forKey: .watcher_id),
+                regex: try c.decode(String.self, forKey: .regex),
+                name: try c.decode(String.self, forKey: .name)
+            )
+        case "unwatch_session":
+            self = .unwatchSession(
+                sid: try c.decode(String.self, forKey: .sid),
+                watcherId: try c.decode(String.self, forKey: .watcher_id)
+            )
+        case "watchers_list":
+            self = .watchersList(
+                sid: try c.decode(String.self, forKey: .sid),
+                watchers: try c.decode([WatcherInfo].self, forKey: .watchers)
+            )
+        case "watcher_matched":
+            self = .watcherMatched(
+                sid: try c.decode(String.self, forKey: .sid),
+                watcherId: try c.decode(String.self, forKey: .watcher_id),
+                lineText: try c.decode(String.self, forKey: .line_text)
             )
 
         default:

@@ -2031,6 +2031,7 @@ dependencies = [
  "portable-pty",
  "qrcode",
  "rand 0.8.6",
+ "regex",
  "reqwest",
  "security-framework",
  "serde",

@@ -1,5 +1,6 @@
 //! Unix socket server: accept producer connections + frame codec.
 
+use crate::notify_engine::NotifyEngine;
 use crate::producer_registry::ProducerRegistry;
 use anyhow::Result;
 use bytes::BytesMut;
@@ -43,7 +44,10 @@ pub struct AgentSocket {
 }
 
 impl AgentSocket {
-    pub async fn start(registry: Arc<ProducerRegistry>) -> Result<Self> {
+    pub async fn start(
+        registry: Arc<ProducerRegistry>,
+        notify_engine: Arc<NotifyEngine>,
+    ) -> Result<Self> {
         let path = socket_path();
         // Remove stale socket file if present
         if path.exists() {
@@ -61,7 +65,8 @@ impl AgentSocket {
                     Ok((stream, _addr)) => {
                         let reg = Arc::clone(&registry);
                         let ev_tx = events_tx.clone();
-                        tokio::spawn(handle_connection(stream, reg, ev_tx));
+                        let ne = Arc::clone(&notify_engine);
+                        tokio::spawn(handle_connection(stream, reg, ev_tx, ne));
                     }
                     Err(e) => {
                         eprintln!("[agent_socket] accept error: {e}");
@@ -81,37 +86,25 @@ async fn handle_connection(
     mut stream: UnixStream,
     registry: Arc<ProducerRegistry>,
     events_tx: mpsc::UnboundedSender<ProducerEvent>,
+    notify_engine: Arc<NotifyEngine>,
 ) {
     let mut buf = BytesMut::with_capacity(4096);
 
-    // ---- 1. Read ProducerHello ----
-    let hello = loop {
+    // ---- 1. Read first frame and branch by type ----
+    let first_frame = loop {
         match stream.read_buf(&mut buf).await {
             Ok(0) => {
-                eprintln!("[agent_socket] connection closed before hello");
+                eprintln!("[agent_socket] connection closed before first frame");
                 return;
             }
             Ok(_) => {}
             Err(e) => {
-                eprintln!("[agent_socket] read error before hello: {e}");
+                eprintln!("[agent_socket] read error before first frame: {e}");
                 return;
             }
         }
         match codec::try_decode::<P2A>(&mut buf) {
-            Ok(Some(P2A::ProducerHello {
-                argv,
-                pid,
-                cwd,
-                cols,
-                rows,
-                source,
-            })) => {
-                break (argv, pid, cwd, cols, rows, source);
-            }
-            Ok(Some(other)) => {
-                eprintln!("[agent_socket] expected ProducerHello, got {other:?}");
-                return;
-            }
+            Ok(Some(frame)) => break frame,
             Ok(None) => continue,
             Err(e) => {
                 eprintln!("[agent_socket] frame decode error: {e}");
@@ -119,7 +112,91 @@ async fn handle_connection(
             }
         }
     };
-    let (argv, pid, _cwd, cols, rows, source) = hello;
+
+    match first_frame {
+        P2A::NotifyRegister {
+            register_id,
+            argv,
+            started_at_ms,
+            session_hint,
+            title,
+        } => {
+            notify_engine
+                .register_notify(
+                    register_id.clone(),
+                    argv,
+                    started_at_ms,
+                    session_hint,
+                    title,
+                )
+                .await;
+            // Send NotifyAck
+            if let Ok(frame) = codec::encode(&A2P::NotifyAck {
+                register_id: register_id.clone(),
+            }) {
+                if let Err(e) = stream.write_all(&frame).await {
+                    eprintln!("[agent_socket] write NotifyAck error: {e}");
+                    return;
+                }
+            }
+            // Wait for NotifyComplete
+            loop {
+                match stream.read_buf(&mut buf).await {
+                    Ok(0) => return,
+                    Ok(_) => {}
+                    Err(_) => return,
+                }
+                loop {
+                    match codec::try_decode::<P2A>(&mut buf) {
+                        Ok(Some(P2A::NotifyComplete {
+                            register_id,
+                            exit_code,
+                            ended_at_ms,
+                        })) => {
+                            notify_engine
+                                .complete_notify(register_id, exit_code, ended_at_ms)
+                                .await;
+                            return;
+                        }
+                        Ok(Some(_)) => continue,
+                        Ok(None) => break,
+                        Err(_) => return,
+                    }
+                }
+            }
+        }
+        P2A::ProducerHello {
+            argv,
+            pid,
+            cwd: _cwd,
+            cols,
+            rows,
+            source,
+        } => {
+            handle_producer_hello(
+                stream, registry, events_tx, argv, pid, cols, rows, source, buf,
+            )
+            .await;
+        }
+        other => {
+            eprintln!("[agent_socket] unexpected first frame: {other:?}");
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_producer_hello(
+    mut stream: UnixStream,
+    registry: Arc<ProducerRegistry>,
+    events_tx: mpsc::UnboundedSender<ProducerEvent>,
+    argv: Vec<String>,
+    pid: u32,
+    cols: u16,
+    rows: u16,
+    source: SessionSource,
+    buf: BytesMut,
+) {
+    // (buf may contain bytes read after the hello frame)
 
     // ---- 2. Register in ProducerRegistry ----
     // The A2P sender that the registry (and upper layer) use to write to this producer.
@@ -196,8 +273,9 @@ async fn handle_connection(
     });
 
     // Read task: forward P2A from socket → channel
+    // Seed read_buf with any bytes already buffered from the hello-frame read.
     let read_sid = sid.clone();
-    let mut read_buf = BytesMut::with_capacity(4096);
+    let mut read_buf = buf;
     loop {
         match reader.read_buf(&mut read_buf).await {
             Ok(0) => break, // connection closed
@@ -244,17 +322,22 @@ mod tests {
         registry: Arc<ProducerRegistry>,
         sock_path: std::path::PathBuf,
     ) -> mpsc::UnboundedReceiver<ProducerEvent> {
+        use crate::notify_engine::NotifyEngine;
+        use tokio::sync::mpsc as async_mpsc;
         if sock_path.exists() {
             std::fs::remove_file(&sock_path).unwrap();
         }
         let listener = UnixListener::bind(&sock_path).unwrap();
         let (events_tx, events_rx) = mpsc::unbounded_channel::<ProducerEvent>();
+        let (ctrl_tx, _ctrl_rx) = async_mpsc::unbounded_channel();
+        let ne = NotifyEngine::new(None, ctrl_tx);
 
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let reg = Arc::clone(&registry);
                 let ev = events_tx.clone();
-                tokio::spawn(handle_connection(stream, reg, ev));
+                let ne_clone = Arc::clone(&ne);
+                tokio::spawn(handle_connection(stream, reg, ev, ne_clone));
             }
         });
 

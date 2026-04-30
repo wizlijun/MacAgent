@@ -223,6 +223,40 @@ pub enum CtrlPayload {
         source: ClipSource,
         content: ClipContent,
     },
+
+    // M4.6: notify watchers
+    WatchSession {
+        sid: String,
+        watcher_id: String,
+        regex: String,
+        name: String,
+    },
+    UnwatchSession {
+        sid: String,
+        watcher_id: String,
+    },
+    WatchersList {
+        sid: String,
+        watchers: Vec<WatcherInfo>,
+    },
+    WatcherMatched {
+        sid: String,
+        watcher_id: String,
+        line_text: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Watcher types (M4.6)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WatcherInfo {
+    pub id: String,
+    pub regex: String,
+    pub name: String,
+    pub hits: u32,
+    pub last_match: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

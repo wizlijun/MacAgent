@@ -9,6 +9,7 @@
 use crate::agent_socket::ProducerEvent;
 use crate::clipboard_bridge::ClipboardBridge;
 use crate::launcher::{launch_in_terminal, LauncherConfig};
+use crate::notify_engine::NotifyEngine;
 use crate::producer_registry::ProducerRegistry;
 use anyhow::Result;
 use macagent_core::ctrl_msg::{ClipSource, CtrlPayload, SessionInfo, SessionSource};
@@ -52,6 +53,7 @@ pub struct SessionRouter {
     ctrl_tx: mpsc::UnboundedSender<CtrlPayload>,
     launcher_config: Arc<LauncherConfig>,
     clipboard_bridge: Arc<ClipboardBridge>,
+    notify_engine: Arc<NotifyEngine>,
 }
 
 impl SessionRouter {
@@ -60,6 +62,7 @@ impl SessionRouter {
         ctrl_tx: mpsc::UnboundedSender<CtrlPayload>,
         launcher_config: Arc<LauncherConfig>,
         clipboard_bridge: Arc<ClipboardBridge>,
+        notify_engine: Arc<NotifyEngine>,
     ) -> Self {
         Self {
             registry,
@@ -67,6 +70,7 @@ impl SessionRouter {
             ctrl_tx,
             launcher_config,
             clipboard_bridge,
+            notify_engine,
         }
     }
 
@@ -123,6 +127,34 @@ impl SessionRouter {
             } => {
                 // Mac→iOS direction is produced by ClipboardBridge itself; ignore if echoed back.
                 eprintln!("warn: received ClipboardSet from iOS with source=Mac, ignored");
+            }
+            CtrlPayload::WatchSession {
+                sid,
+                watcher_id,
+                regex,
+                name,
+            } => {
+                match self
+                    .notify_engine
+                    .add_watcher(sid.clone(), watcher_id, regex, name)
+                    .await
+                {
+                    Ok(()) => {
+                        let watchers = self.notify_engine.list_watchers(&sid).await;
+                        self.send_ctrl(CtrlPayload::WatchersList { sid, watchers });
+                    }
+                    Err(e) => {
+                        self.send_ctrl(CtrlPayload::Error {
+                            code: "invalid_regex".into(),
+                            msg: e,
+                        });
+                    }
+                }
+            }
+            CtrlPayload::UnwatchSession { sid, watcher_id } => {
+                self.notify_engine.remove_watcher(&sid, &watcher_id).await;
+                let watchers = self.notify_engine.list_watchers(&sid).await;
+                self.send_ctrl(CtrlPayload::WatchersList { sid, watchers });
             }
             _ => {
                 // Other variants (Heartbeat, Ping, etc.) are handled by rtc_glue.
@@ -261,6 +293,7 @@ impl SessionRouter {
         let ctrl_tx = self.ctrl_tx.clone();
         let registry = Arc::clone(&self.registry);
         let pending = Arc::clone(&self.pending);
+        let notify_engine = Arc::clone(&self.notify_engine);
         tokio::spawn(async move {
             while let Some(frame) = frames_rx.recv().await {
                 match frame {
@@ -310,8 +343,15 @@ impl SessionRouter {
                         cursor_col,
                         cursor_visible,
                         title,
-                        lines,
+                        ref lines,
                     } => {
+                        // Feed changed lines to notify engine for watcher matching.
+                        for line in lines {
+                            let text: String = line.runs.iter().map(|r| r.text.as_str()).collect();
+                            if !text.trim().is_empty() {
+                                notify_engine.feed_session_line(&sid_clone, &text).await;
+                            }
+                        }
                         let _ = ctrl_tx.send(CtrlPayload::TermDelta {
                             sid: sid_clone.clone(),
                             revision,
@@ -321,7 +361,7 @@ impl SessionRouter {
                             cursor_col,
                             cursor_visible,
                             title,
-                            lines,
+                            lines: lines.clone(),
                         });
                     }
                     P2A::TermHistorySnapshot { revision, lines } => {
@@ -458,15 +498,21 @@ mod tests {
         Arc::new(ClipboardBridge::new(tx))
     }
 
+    fn make_notify_engine(ctrl_tx: mpsc::UnboundedSender<CtrlPayload>) -> Arc<NotifyEngine> {
+        NotifyEngine::new(None, ctrl_tx)
+    }
+
     #[tokio::test]
     async fn handle_attach_calls_send_to_registry() {
         let registry = make_registry();
         let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<CtrlPayload>();
+        let (ne_tx, _ne_rx) = mpsc::unbounded_channel::<CtrlPayload>();
         let router = SessionRouter::new(
             Arc::clone(&registry),
             ctrl_tx,
             make_launcher_config(),
             make_bridge(),
+            make_notify_engine(ne_tx),
         );
 
         // Register a fake producer
@@ -505,11 +551,13 @@ mod tests {
     async fn pending_launches_match_on_producer_connect() {
         let registry = make_registry();
         let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<CtrlPayload>();
+        let (ne_tx, _ne_rx) = mpsc::unbounded_channel::<CtrlPayload>();
         let router = Arc::new(SessionRouter::new(
             Arc::clone(&registry),
             ctrl_tx,
             make_launcher_config(),
             make_bridge(),
+            make_notify_engine(ne_tx),
         ));
 
         // Manually inject a pending launch (bypassing AppleScript)
@@ -568,11 +616,13 @@ mod tests {
     async fn launch_session_rejects_unknown_launcher() {
         let registry = make_registry();
         let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<CtrlPayload>();
+        let (ne_tx, _ne_rx) = mpsc::unbounded_channel::<CtrlPayload>();
         let router = SessionRouter::new(
             Arc::clone(&registry),
             ctrl_tx,
             make_launcher_config(),
             make_bridge(),
+            make_notify_engine(ne_tx),
         );
 
         router
