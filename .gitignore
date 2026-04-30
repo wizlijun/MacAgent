@@ -1,0 +1,28 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Rust
+mac-agent/target/
+**/*.rs.bk
+
+# Xcode
+ios-app/build/
+ios-app/DerivedData/
+ios-app/**/xcuserdata/
+*.xcworkspace/xcuserdata
+*.xcuserstate
+
+# Node / Wrangler
+worker/node_modules/
+worker/dist/
+worker/.wrangler/
+worker/.dev.vars
+
+# Logs
+*.log
