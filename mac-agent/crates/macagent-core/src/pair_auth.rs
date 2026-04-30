@@ -20,13 +20,14 @@ pub struct PairToken {
     pub pair_token: String,
     pub room_id: String,
     pub worker_url: String,
+    pub mac_device_secret: String, // base64-encoded 32B secret issued by Worker /pair/create
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PairRecord {
     pub pair_id: String,
     pub peer_pubkey_b64: String,
-    pub device_secret_b64: String,
+    pub mac_device_secret_b64: String,
     pub worker_url: String,
 }
 

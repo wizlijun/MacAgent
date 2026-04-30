@@ -43,6 +43,7 @@ fn pair_token_struct_serializes() {
         pair_token: "ABC234".into(),
         room_id: "11111111-1111-1111-1111-111111111111".into(),
         worker_url: "https://macagent.workers.dev".into(),
+        mac_device_secret: "ZmFrZS0zMmJ5dGUtbWFjLWRldmljZS1zZWNyZXQ=".into(),
     };
     let json = serde_json::to_string(&tok).unwrap();
     let back: PairToken = serde_json::from_str(&json).unwrap();

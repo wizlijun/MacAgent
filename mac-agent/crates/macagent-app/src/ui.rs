@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use egui::ColorImage;
-use macagent_core::pair_auth::{derive_shared_secret, PairAuth, PairRecord, PairToken, X25519Pub};
+use macagent_core::pair_auth::{PairAuth, PairRecord, PairToken, X25519Pub};
 
 use crate::{keychain, pair_qr};
 
@@ -17,7 +17,7 @@ use crate::{keychain, pair_qr};
 const KC_LOCAL_SECRET: &str = "local_secret_key";
 const KC_PAIR_ID: &str = "pair_id";
 const KC_PEER_PUBKEY: &str = "peer_pubkey_b64";
-const KC_DEVICE_SECRET: &str = "device_secret_b64";
+const KC_MAC_DEVICE_SECRET: &str = "mac_device_secret_b64";
 const KC_WORKER_URL: &str = "worker_url";
 
 // ── Pair state ──────────────────────────────────────────────────────────────
@@ -61,6 +61,8 @@ pub struct MacAgentApp {
     pub tx: mpsc::SyncSender<UiEvent>,
     /// room_id pending texture upload (carried alongside pending_png).
     pub pending_room_id: Option<String>,
+    /// mac_device_secret from /pair/create, held until pairing completes.
+    pub pending_mac_device_secret: Option<String>,
 }
 
 impl MacAgentApp {
@@ -97,6 +99,7 @@ impl MacAgentApp {
             last_error: None,
             pending_png: None,
             pending_room_id: None,
+            pending_mac_device_secret: None,
             runtime,
             rx,
             tx,
@@ -112,7 +115,7 @@ impl MacAgentApp {
             Some(v) => String::from_utf8(v)?,
             None => return Ok(None),
         };
-        let device_secret_b64 = match keychain::load(KC_DEVICE_SECRET)? {
+        let mac_device_secret_b64 = match keychain::load(KC_MAC_DEVICE_SECRET)? {
             Some(v) => String::from_utf8(v)?,
             None => return Ok(None),
         };
@@ -123,7 +126,7 @@ impl MacAgentApp {
         Ok(Some(PairRecord {
             pair_id,
             peer_pubkey_b64,
-            device_secret_b64,
+            mac_device_secret_b64,
             worker_url,
         }))
     }
@@ -131,7 +134,10 @@ impl MacAgentApp {
     pub fn save_pair_record(record: &PairRecord) -> Result<()> {
         keychain::save(KC_PAIR_ID, record.pair_id.as_bytes())?;
         keychain::save(KC_PEER_PUBKEY, record.peer_pubkey_b64.as_bytes())?;
-        keychain::save(KC_DEVICE_SECRET, record.device_secret_b64.as_bytes())?;
+        keychain::save(
+            KC_MAC_DEVICE_SECRET,
+            record.mac_device_secret_b64.as_bytes(),
+        )?;
         keychain::save(KC_WORKER_URL, record.worker_url.as_bytes())?;
         Ok(())
     }
@@ -139,7 +145,7 @@ impl MacAgentApp {
     fn revoke_pair_record() -> Result<()> {
         keychain::delete(KC_PAIR_ID)?;
         keychain::delete(KC_PEER_PUBKEY)?;
-        keychain::delete(KC_DEVICE_SECRET)?;
+        keychain::delete(KC_MAC_DEVICE_SECRET)?;
         keychain::delete(KC_WORKER_URL)?;
         Ok(())
     }
@@ -179,6 +185,7 @@ impl MacAgentApp {
                 UiEvent::Created { _token, png } => {
                     self.last_error = None;
                     self.pending_room_id = Some(_token.room_id.clone());
+                    self.pending_mac_device_secret = Some(_token.mac_device_secret.clone());
                     // Store PNG; texture is uploaded on the next frame when ctx is available.
                     self.pending_png = Some(png);
                 }
@@ -186,8 +193,9 @@ impl MacAgentApp {
                     pair_id,
                     peer_pubkey_b64,
                 } => {
-                    // Derive shared_secret and save all Keychain entries.
-                    match self.complete_pairing(pair_id, peer_pubkey_b64) {
+                    let mac_device_secret_b64 =
+                        self.pending_mac_device_secret.take().unwrap_or_default();
+                    match self.complete_pairing(pair_id, peer_pubkey_b64, mac_device_secret_b64) {
                         Ok(record) => {
                             self.last_error = None;
                             self.state = PairState::Paired { record };
@@ -206,17 +214,23 @@ impl MacAgentApp {
         }
     }
 
-    /// Derive shared_secret, write Keychain, return PairRecord.
-    fn complete_pairing(&self, pair_id: String, peer_pubkey_b64: String) -> Result<PairRecord> {
-        let peer_pub = X25519Pub::from_b64(&peer_pubkey_b64)?;
-        let shared_secret = derive_shared_secret(&self.local_keys, &peer_pub)?;
-        use base64::engine::general_purpose::STANDARD as B64;
-        use base64::Engine;
-        let device_secret_b64 = B64.encode(shared_secret);
+    /// Write Keychain entries and return PairRecord.
+    ///
+    /// `mac_device_secret_b64` is the base64-encoded 32B secret issued by the Worker during
+    /// /pair/create.  It is intentionally kept separate from the ECDH shared_secret, which is
+    /// derived on-demand from local_keys + peer_pubkey and never persisted.
+    fn complete_pairing(
+        &self,
+        pair_id: String,
+        peer_pubkey_b64: String,
+        mac_device_secret_b64: String,
+    ) -> Result<PairRecord> {
+        // Validate peer pubkey parses (we'll need it for ECDH at runtime).
+        let _peer_pub = X25519Pub::from_b64(&peer_pubkey_b64)?;
         let record = PairRecord {
             pair_id,
             peer_pubkey_b64,
-            device_secret_b64,
+            mac_device_secret_b64,
             worker_url: self.worker_url.clone(),
         };
         Self::save_pair_record(&record)?;
@@ -344,6 +358,11 @@ async fn pair_create_request(worker_url: &str, pubkey_b64: &str) -> Result<(Pair
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("missing room_id"))?
         .to_string();
+    let mac_device_secret = body
+        .get("mac_device_secret")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing mac_device_secret"))?
+        .to_string();
 
     let payload = serde_json::json!({
         "pair_token": pair_token,
@@ -357,6 +376,7 @@ async fn pair_create_request(worker_url: &str, pubkey_b64: &str) -> Result<(Pair
         pair_token,
         room_id,
         worker_url: worker_url.to_string(),
+        mac_device_secret,
     };
     Ok((token, png))
 }
