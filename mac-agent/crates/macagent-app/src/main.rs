@@ -20,8 +20,7 @@ fn load_icon() -> Result<tray_icon::Icon> {
         .context("decode tray-icon.png")?
         .into_rgba8();
     let (w, h) = img.dimensions();
-    tray_icon::Icon::from_rgba(img.into_raw(), w, h)
-        .context("build tray icon from rgba")
+    tray_icon::Icon::from_rgba(img.into_raw(), w, h).context("build tray icon from rgba")
 }
 
 fn build_tray() -> Result<(TrayIcon, MenuItem)> {
@@ -55,7 +54,10 @@ fn main() -> Result<()> {
         let _ = proxy.send_event(UserEvent::MenuEvent(evt));
     }));
 
-    eprintln!("macagent v{} started; tray icon should be visible", macagent_core::version());
+    eprintln!(
+        "macagent v{} started; tray icon should be visible",
+        macagent_core::version()
+    );
 
     event_loop.run(move |event, _window_target, control_flow| {
         // 菜单栏常驻进程：事件来才唤醒，零 CPU 开销
