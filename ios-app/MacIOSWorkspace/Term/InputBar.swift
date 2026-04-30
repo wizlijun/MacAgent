@@ -4,6 +4,7 @@ struct InputBar: View {
     @Binding var text: String
     let onSendText: (String) -> Void
     let onKey: (InputKey) -> Void
+    let onCompose: () -> Void   // M4.4 新增
 
     private let quickKeys: [(label: String, key: InputKey)] = [
         ("Tab", .tab), ("Esc", .escape),
@@ -23,6 +24,12 @@ struct InputBar: View {
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                     }
+                    // M4.4 新增 ✏️ 按钮
+                    Button(action: onCompose) {
+                        Image(systemName: "square.and.pencil")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
                 .padding(.horizontal, 8)
             }

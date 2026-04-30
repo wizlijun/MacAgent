@@ -95,6 +95,8 @@ struct SessionDetailView: View {
     @Bindable var store: SessionStore
     let sid: String
     @State private var inputText: String = ""
+    @State private var composeText: String = ""        // M4.4 新增
+    @State private var presentingCompose: Bool = false  // M4.4 新增
 
     var body: some View {
         VStack(spacing: 0) {
@@ -121,7 +123,8 @@ struct SessionDetailView: View {
                 },
                 onKey: { key in
                     Task { await store.sendKey(sid: sid, key: key) }
-                }
+                },
+                onCompose: { presentingCompose = true }   // M4.4 新增
             )
         }
         .navigationTitle(sessionLabel)
@@ -133,6 +136,16 @@ struct SessionDetailView: View {
         }
         .onDisappear {
             Task { await store.detach(sid: sid) }
+        }
+        .sheet(isPresented: $presentingCompose) {   // M4.4 新增
+            ComposeSheet(
+                text: $composeText,
+                title: "Compose · \(sessionLabel)",
+                onSend: { sent in
+                    Task { await store.sendInput(sid: sid, text: sent) }
+                },
+                onCancel: {}
+            )
         }
     }
 
