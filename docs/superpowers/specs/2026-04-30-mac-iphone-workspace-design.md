@@ -148,20 +148,56 @@
 - **接口** —— `start_session()`、`apply_remote_sdp(sdp)`、`add_local_candidate()`、`open_data_channel(label, opts)`、`replace_video_source(track)`。
 - **依赖** —— `webrtc`（webrtc-rs）crate、Worker `/turn/cred` 提供 ICE servers、SignalingClient。
 
-#### SessionManager
-- **目的** —— 创建并守护 PTY 会话；为每个会话配置环形缓冲 + append-only 日志；分发输出给订阅者；resume 时补回 backlog。
-- **接口** —
-  - `spawn(cmd: SpawnSpec) → SessionId`
-  - `write(id, bytes)`
-  - `subscribe(id) → Stream<(seq, bytes)>`
-  - `replay(id, from_seq) → Stream<(seq, bytes)>`
-  - `kill(id)`
-  - `list() → [SessionInfo]`
-- **状态** —— `HashMap<SessionId, SessionState>`；每个会话拥有 `(ring_buffer, log_writer, child_pid, last_seq)` 四元组。
-- **环境契约** —— 每个 spawn 出来的 PTY 在环境里注入 `MACAGENT_SESSION_ID=<sid>`，让派生进程（特别是 `notify` shim）能定位到所属会话。
-- **存储** —— `~/Library/Application Support/macagent/sessions/<id>.log`（append-only，每天滚动，>7 天自动清理）。
-- **依赖** —— `portable-pty`、`tokio::fs`。
-- **上限** —— 硬限 8 并发；超出 `spawn` 返回 `ErrSessionLimit`。
+#### Producer 子进程模式（M3 v2 取代 SessionManager）
+
+**核心模型变更**：受 hurryvc 启发，放弃 spawn-in-Agent 隐藏 PTY 模型，改为 producer 在用户终端可见。M3 引入 `macagent run -- <cmd>` CLI 子命令；该子进程把 PTY 直接挂在用户的 tty 上（Mac 用户看得见 + 可输入），同时在 producer 进程内用 `alacritty_terminal` 解析 PTY 输出，把结构化的 TermSnapshot/Delta 经 Unix socket 推给菜单栏 Mac Agent，再由 Agent 经 ctrl DataChannel 转发给 iOS。
+
+**Mac Agent menu bar 端的对应模块**：
+
+##### ProducerRegistry
+- **目的** —— 维护 sid → producer 的映射、SessionInfo（argv、pid、cols/rows、source、started_ts）、生命周期。
+- **接口** —— `register(producer_tx, hello) → sid`、`get(sid)`、`list() → [SessionInfo]`、`unregister(sid, reason)`。
+- **上限** —— 硬限 8 并发；超出 `register` 返回 `ErrSessionLimit`；同时 menu bar UI 列表里展示。
+
+##### AgentSocket
+- **目的** —— Unix domain socket server，监听 `~/Library/Application Support/macagent/agent.sock`；接受 producer 子进程连接；JSON-frame（4 字节 BE 长度前缀 + JSON body）双向。
+- **接口** —— `start(addr) → JoinHandle`、广播 `producer_connected/disconnected` 事件给 SessionRouter。
+- **依赖** —— `tokio::net::UnixListener`。
+
+##### Launcher
+- **目的** —— 读 `~/Library/Application Support/macagent/launchers.json5` 用户白名单；接收 `LaunchSession { launcher_id }`，校验后通过 AppleScript 调用 Terminal.app 弹新窗口跑 `macagent run --launcher-id <id>`。
+- **接口** —— `load_config()`、`launch(launcher_id, cwd_override) → Result<()>`、`reload()` (SIGHUP)。
+- **默认白名单** —— `zsh` / `claude code` / `codex` / `npm test` / `git status`（首次启动自动写入配置文件）。
+- **依赖** —— `osascript` 系统命令；用户首次需授予 macOS Automation 权限给 Terminal.app。
+
+##### SessionRouter
+- **目的** —— ctrl DataChannel ↔ Unix socket 的双向桥。把 iOS 来的 `Input` / `Resize` / `KillSession` 经 socket 转发给对应 producer；把 producer 来的 `TermSnapshot` / `TermDelta` / `TermHistory*` / `ProducerExit` 包成 SignedCtrl 经 ctrl DC 推给 iOS。
+- **接口** —— `attach_iOS(sid)`（标记开始流；告诉 producer 进入 streaming 模式）、`detach_iOS(sid)`、内部 mpsc 路由。
+
+**`macagent run` producer 端**（同一 binary 的子命令）：
+
+##### ProducerProcess
+- **目的** —— 在用户当前 tty 跑 `<cmd>`，PTY 输出双线流到本地 tty + alacritty parser；把结构化结果经 socket 推给 Agent。
+- **职责** —
+  1. 启动时：连 `agent.sock`，发 `ProducerHello { argv, pid, cols, rows, cwd, launcher_id?, source }`，等 `ProducerWelcome { sid }`
+  2. 用 `portable-pty` fork 子进程；PTY master 输出 → `tee` 到本地 tty（用户看到）+ 喂 alacritty `Term`
+  3. alacritty grid 增量更新；每 50ms（默认）算 diff → `TermDelta`；每 5s 推一次全量 `TermSnapshot` keyframe；scrollback 满推 `TermHistoryAppend`
+  4. 收 socket `Input { TerminalInput::Text/Key }` → 翻译成 PTY stdin 字节（控制键查表，例如 CtrlC=0x03、Tab=0x09）
+  5. 收 socket `Resize { cols, rows }` → 调 master.resize（PTY ioctl TIOCSWINSZ）
+  6. 收 socket `KillRequest` 或 PTY 子进程退出 → 推 `ProducerExit { exit_status, reason }` → 关 socket → 进程退出
+  7. Cmd+W 关 Terminal.app 窗口 → SIGHUP → producer 优雅退出
+- **依赖** —— `portable-pty`、`alacritty_terminal`、`tokio::net::UnixStream`。
+- **不依赖** —— Keychain（不需要 pair 密钥；Agent 持有）、reqwest（不连 worker）、webrtc-rs（不发 WebRTC）。
+
+**配置 & 运行时**：
+
+```
+~/Library/Application Support/macagent/
+├── launchers.json5         # 用户可编辑的 launcher 列表
+├── agent.json5             # delta_interval_ms / keyframe_interval_ms 等可调参数
+├── agent.sock              # Unix socket（运行时创建）
+└── sessions/<sid>.log      # 每 session 的 append-only log（用于审计/M4 notify）
+```
 
 #### GuiCapture
 - **目的** —— 管理监管集合；用 ScreenCaptureKit 抓取唯一的 active 窗口；用 VideoToolbox 编码 H.264 NALU；交付到 `RtcPeer.video`。
@@ -225,19 +261,29 @@
 - 顶层用 `NavigationSplitView`：iPhone 与 iPad 竖屏窄宽度下渲染单列；iPad regular 宽度下渲染 sidebar + detail。
 - 所有视图通过 `@Environment(\.horizontalSizeClass)` 做 compact 与 regular 决策；不硬编码"iPhone"或"iPad"。
 - v0.1 不支持多 scene / 多 window；单 scene 必须在 iPad Split View、Slide Over、Stage Manager 下不崩溃（场景 resize 不报错；视口在 `geometry` 变化时重算上报）。
-- CliView 通过 `UIKeyCommand` 接入硬件键盘（不仅依赖软键盘）。
+- TermView 通过 `UIKeyCommand` 接入硬件键盘（不仅依赖软键盘）。
 
 #### PairingFlow
 - AVFoundation QR 扫码。POST `/pair/claim`。pair_secret 写入 Keychain（`kSecAttrAccessibleAfterFirstUnlock`）。
 
 #### RtcClient
-- 封装 `GoogleWebRTC` iOS framework。持有一个 `RTCPeerConnection`、若干 observer、渲染器。在四条 DataChannel 之上暴露强类型 Swift API。
+- 封装 `GoogleWebRTC` iOS framework。持有一个 `RTCPeerConnection`、若干 observer、渲染器。在所有 DataChannel 之上暴露强类型 Swift API。
 
 #### SessionStore（`@Observable`）
-- 订阅 `ctrl` 通道；为 UI 维护一份有序的 `Session` 与 `SupervisionEntry` 列表。
+- 订阅 `ctrl` 通道；维护两个列表：(a) Mac Agent 上活跃的 PTY session（`SessionInfo`）；(b) GUI supervision entries（M5+）。处理 `LaunchAck/Reject`、`SessionAdded/Removed`、`TermSnapshot/Delta`、`TermHistory*` 路由到对应 viewport state。
 
-#### CliView
-- `SwiftTerm` 渲染。输入字节直接走 `pty/<id>`。底部快捷键栏（Esc、Tab、Cmd、Ctrl、↑↓←→）。
+#### TermView（M3 v2，取代旧 CliView）
+- **不依赖 SwiftTerm**——producer 端 alacritty 已经把 ANSI 解析完了，iOS 收到的是结构化 `TermSnapshot/Delta { lines: [{ index, runs: [{text, fg, bg, bold, italic, underline, inverse}], wrapped }] }`。
+- 用 SwiftUI `Text` + `AttributedString`（或 `LazyVStack` 行渲染）按 run 上色拼接。
+- 底部 `InputBar` 子视图：软键盘文字输入 → `Input { TerminalInput::Text }`；快捷键栏（Tab / Esc / Ctrl+C / Ctrl+D / Arrow×4 / Ctrl+R / 等）→ `Input { TerminalInput::Key }`；长文本批量粘贴框（防中文 IME 卡顿）。
+- 离屏 `HistoryView` 子视图：纯文本 `ScrollView`，从 `TermHistorySnapshot/Append` 累积。
+- `UIKeyCommand` 把硬件键盘的 Tab / Esc / Ctrl+C / 方向键也映射成对应 `TerminalInput::Key`。
+- `geometry` 改变时触发 `Resize { sid, cols, rows }` 上报。
+
+#### SessionListView
+- 显示 launchers（Mac Agent 配置的白名单）作为可点击按钮 → 发 `LaunchSession { launcher_id }`。
+- 显示 active sessions（来自 `SessionStore.list()`）→ 点击进入对应 TermView。
+- 状态指示：streaming / not streaming / 已退出。
 
 #### GuiStreamView
 - 用 `RTCMTLVideoView` 渲染 active 流。手势识别映射：
@@ -253,7 +299,7 @@
 - 远端剪贴板的只读镜像 + 复制到 iOS 按钮。Local → Mac 必须显式按"发送到 Mac"。本地 5 条内存历史。
 
 #### PushHandler
-- 申请 APNs entitlement；启动时把 device token 注册到 Worker。点击通知 deep-link 到对应 session 的 CliView。
+- 申请 APNs entitlement；启动时把 device token 注册到 Worker。点击通知 deep-link 到对应 session 的 TermView。
 
 ### 3.3 Cloudflare Workers（TypeScript）
 
@@ -319,36 +365,83 @@ Mac Agent                    Cloudflare Worker                    iOS App
 
 iOS 启动 → 双方各自 WebSocket 连到 `/signal/:pair_id`（DO 若已 hibernate 则 wake）→ 各自调 `/turn/cred` 取 TURN 凭证 → iOS 创建 SDP offer，经 DO 中继到 Mac → Mac 回 answer → ICE candidates 双向交换 → DTLS-SRTP 完成 → DataChannel 全部打开 → DO 进入 idle（WS 空闲 5 分钟后 hibernate）。
 
-### 4.3 CLI 会话生命周期
+### 4.3 CLI 会话生命周期（M3 v2 producer 模型）
 
 ```
-iOS                                       Mac Agent
- │ ctrl: {open_session, cmd:"zsh"}         │
- ├────────────────────────────────────────►│ SessionManager.spawn("zsh")
- │                                         │   PTY pid=12345, sid="s1"
- │                                         │   开 ring buffer + log
- │ ctrl: {session_opened, sid:"s1"}        │
- │◄────────────────────────────────────────│
- │   ── DataChannel `pty/s1` 打开 ──       │
- │ pty/s1: bytes("ls\r")                   │
- ├────────────────────────────────────────►│ pty.write
- │ pty/s1: (seq, bytes("file1\nfile2\n$"))│
- │◄────────────────────────────────────────│ ring buffer + log；广播
- │
- │  ── 网络中断；iOS 后台 5 分钟 ──
- │                                         │ PTY 继续；ring 持续填
- │  ── iOS 回到前台；PeerConnection 重建 ──
- │
- │ ctrl: {resume_session, sid:"s1",        │
- │        last_seq: 4711}                  │
- ├────────────────────────────────────────►│ SessionManager.replay(s1, 4711)
- │ pty/s1: (seq, bytes(<missed output>))   │
- │◄────────────────────────────────────────│
- │ pty/s1: (seq, bytes(<live output>))     │
- │◄────────────────────────────────────────│
+iOS                            Mac Agent (menu bar)            Producer (Terminal.app 窗口)
+ │ ctrl: {LaunchSession,         │                              │
+ │        launcher_id:"claude-   │                              │
+ │        code", req_id:"r1"}    │                              │
+ ├──────────────────────────────►│ Launcher.load_config 查 argv  │
+ │                               │ → osascript open Terminal.app │
+ │                               │   with `macagent run          │
+ │                               │     --launcher-id claude-code`│
+ │                               │                              │ ── 用户看见新窗口冒出 ──
+ │                               │                              │ macagent run:
+ │                               │                              │   连 agent.sock
+ │                               │ socket: ProducerHello {       │   fork PTY (claude code)
+ │                               │   argv, pid, cols, rows }     │   alacritty Term 初始化
+ │                               │◄──────────────────────────────│
+ │                               │ ProducerRegistry.register     │
+ │                               │ → sid="s1"                    │
+ │                               │ socket: ProducerWelcome {     │
+ │                               │   sid: "s1" }                 │
+ │                               ├──────────────────────────────►│
+ │ ctrl: {LaunchAck, req_id:"r1",│                              │   PTY → 本机 tty (用户可见)
+ │        sid:"s1"}              │                              │   PTY → alacritty Term
+ │◄──────────────────────────────│                              │
+ │                               │                              │
+ │ ctrl: {AttachSession, sid:"s1"}                              │
+ ├──────────────────────────────►│ SessionRouter.attach_iOS(s1)  │
+ │                               │ socket: 通知 producer streaming│
+ │                               ├──────────────────────────────►│
+ │                               │                              │   每 50ms 算 diff
+ │                               │ socket: TermDelta {           │   → TermDelta
+ │                               │   revision, lines }           │
+ │                               │◄──────────────────────────────│
+ │ ctrl: TermDelta {sid, ...}    │ session_router 包成 SignedCtrl│
+ │◄──────────────────────────────│                              │
+ │                               │                              │
+ │ TermView 拼 lines/runs 渲染    │                              │
+ │                               │                              │
+ │ ctrl: Input {sid, Text "ls\r"}│                              │
+ ├──────────────────────────────►│ socket: Input {Text "ls\r"}  │
+ │                               ├──────────────────────────────►│
+ │                               │                              │   PTY.write("ls\r")
+ │                               │                              │   PTY 回 "$ ls\r\n..."
+ │                               │ socket: TermDelta             │   alacritty 解析
+ │                               │◄──────────────────────────────│
+ │ ctrl: TermDelta               │                              │
+ │◄──────────────────────────────│                              │
+ │                               │                              │
+ │  ── 用户在 Terminal 直接输入 ─┼──────────────────────────────► PTY (chaos OK，与 iOS 输入交错)
+ │                               │                              │
+ │  ── iOS 后台/网络中断 ─────────│                              │
+ │                               │ producer 继续跑（Terminal 仍开）│
+ │  ── iOS 回到前台，重新 attach ──                              │
+ │ ctrl: AttachSession           │                              │
+ ├──────────────────────────────►│                              │
+ │                               │ 立即推一次最新 TermSnapshot   │
+ │                               │ (alacritty Term 当前 grid)    │
+ │ ctrl: TermSnapshot            │                              │
+ │◄──────────────────────────────│                              │
+ │                               │                              │
+ │  ── 用户 Cmd+W 关 Terminal ──                                 │
+ │                               │ socket disconnect             │
+ │                               │◄──────────────────────────────│
+ │                               │ ProducerRegistry.unregister   │
+ │ ctrl: SessionRemoved {        │                              │
+ │   sid:"s1", reason:           │                              │
+ │   "window_closed"}            │                              │
+ │◄──────────────────────────────│                              │
 ```
 
-若 `last_seq` 早于 ring buffer 起点，Agent 从落盘日志补；若日志也已过期，发 `{backlog_truncated, kept_from_seq:N}`，iOS 渲染"…内容已截断…"分隔条。
+**关键点**：
+
+- iOS 离线时**不需要** ring buffer / replay 机制——producer 一直在 Terminal.app 窗口里跑（用户可能也在看），alacritty Term 持续维护当前 grid 状态。iOS 重连只需 `AttachSession` 触发一次 `TermSnapshot` 全量帧即可。
+- 离屏 history（>scrollback 行数被推出 viewport 的）由 `TermHistorySnapshot/Append` 单独通道推；iOS 端的 HistoryView 累积。
+- 用户在 Mac Terminal 里输入 + iOS 也在输入：两路字节都进 PTY stdin，**交错混合**——这是有意设计（hurryvc 风格的 chaos）。iOS UI 显示一个不显眼标签 `🟢 Mac 端有人` 提示。
+- 产品特性"60s 断网重连"在 v2 模型里**自动满足**：alacritty Term 一直在维护，无需 replay。
 
 ### 4.4 GUI 监管与流送
 
@@ -482,7 +575,7 @@ iOS 旋转 / Stage Manager 改尺寸 → 通过 `ctrl: {viewport_changed, sup, v
 | **M0 · 骨架** | Cargo workspace、Xcode 项目、Cloudflare Worker 脚手架；Rust / Swift / Workers 三条 CI；空菜单栏 + 空 iOS App + worker `/health` | 三条流水线全绿；二进制可构建；菜单栏图标出现；iOS 模拟器启动；`wrangler dev` 响应。 |
 | **M1 · 配对 + 控制平面** | PairAuth + SignalingClient + Worker `/pair/*` + Durable Object + KV；ECDH 密钥交换；签名 `ctrl` 通道；菜单栏 QR；iOS 扫码流程 | 真 iPhone 配对真 Mac 成功；两端重启都能恢复；revoke 流程跑通。 |
 | **M2 · WebRTC 媒体面打通** | webrtc-rs RtcPeer、Cloudflare Calls TURN 凭证、ICE/DTLS 建立、空 `ctrl` DataChannel 心跳 | 跨 NAT WebRTC 建连成功；ICE restart 通过。 |
-| **M3 · CLI 通道**（核心交付物 #1） | SessionManager、PTY、ring buffer、落盘日志、`pty/<id>` 通道、iOS SwiftTerm 渲染、resume_session 补回 backlog | 在 iPhone / iPad 上跑 Claude Code / Codex / shell；断网 60 s 后续 → 输出补全；8 个并发会话稳定。 |
+| **M3 · CLI 通道**（核心交付物 #1，v2 producer 模型） | `macagent run` producer 子命令；alacritty 解析 PTY；Unix socket 报到；Mac Agent 端 ProducerRegistry + AgentSocket + Launcher（含 launchers.json5 + AppleScript）+ SessionRouter；iOS TermView（不依赖 SwiftTerm，直接渲染 lines/runs）+ SessionListView | 在 iPhone / iPad 上跑 Claude Code / Codex / shell；Mac 端用户**看得见** Terminal 窗口；iOS 断网 60 s 重连后 attach 即取最新 grid（无需 replay 历史字节）；8 个并发会话稳定；用户 Cmd+W 关 Terminal 等于杀 session；用户 + iOS 同时输入字节交错入 PTY（chaos 可接受）。 |
 | **M4 · 剪贴板 + 通知** | ClipboardBridge 双向、iOS Clipboard panel、`notify` shim 二进制、NotifyEngine 正则 watcher、Worker `/push` + APNs | `notify pnpm build` 推送可触达，含 deep-link；5 个正则场景测试通过。 |
 | **M5 · GUI 监管 v0**（核心交付物 #2） | GuiCapture + ScreenCaptureKit 单窗口 + VideoToolbox H.264 + WebRTC video track；仅 `supervise_existing`；只看不点 | 在 iPhone / iPad 上看到 Chrome 30 fps；switch / remove 流程跑通。 |
 | **M6 · 输入注入 + 内容缩放** | InputInjector：CGEvent click/scroll/keyboard、`key_combo`、`paste_text`；`input` 通道；Accessibility onboarding | 点 Chrome 网页按钮、滚动、长文本粘贴、对 Chrome 与 Electron 系 App 跑 Cmd+/Cmd-/Cmd0。 |
