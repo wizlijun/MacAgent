@@ -1,0 +1,21 @@
+name = "macagent-worker"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Durable Object 占位（M1 启用 SignalingRoom）
+[[durable_objects.bindings]]
+name = "SIGNALING_ROOM"
+class_name = "SignalingRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SignalingRoom"]
+
+# KV 占位（M1 启用，用于 device_pairs）
+# 创建命令（仅在首次部署前由开发者手动执行一次）：
+#   wrangler kv namespace create pairs
+# 把返回的 id 填到下面的占位
+[[kv_namespaces]]
+binding = "PAIRS"
+id = "PLACEHOLDER_PAIRS_KV_ID"
