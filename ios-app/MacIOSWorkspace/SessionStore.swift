@@ -21,6 +21,8 @@ final class SessionStore {
     private(set) var pendingLaunchVersion: Int = 0   // bumped on every mutation
     private(set) var connectedTick: Int = 0
 
+    var clipboardStore: ClipboardStore?  // PairedView 注入
+
     private let glue: RtcGlue?
 
     init(glue: RtcGlue?) {
@@ -125,6 +127,11 @@ final class SessionStore {
             pendingLaunches[reqId]?.status = .rejected(code: code, reason: reason)
             pendingLaunches[reqId]?.settledAt = Date()
             pendingLaunchVersion &+= 1
+
+        case .clipboardSet(let source, let content):
+            if case .mac = source {  // 只接 Mac → iOS 方向
+                clipboardStore?.handleRemote(content)
+            }
 
         default:
             break

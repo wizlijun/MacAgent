@@ -10,6 +10,7 @@ struct PairedView: View {
     @State var hbAckCount: Int = 0
     @State var lastAckSecondsAgo: Int? = nil
     @State private var sessionStore: SessionStore = SessionStore(glue: nil)
+    @State private var clipboardStore: ClipboardStore?
 
     var body: some View {
         NavigationStack {
@@ -51,6 +52,13 @@ struct PairedView: View {
                         Label("会话", systemImage: "terminal")
                     }
                     .buttonStyle(.borderedProminent)
+
+                    if let cs = clipboardStore {
+                        NavigationLink(destination: ClipboardPanel(store: cs)) {
+                            Label("剪贴板", systemImage: "doc.on.clipboard")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                 }
             }
             .padding()
@@ -60,7 +68,10 @@ struct PairedView: View {
     private func connectRtc() async {
         let glue = RtcGlue(pair: pair)
         rtcGlue = glue
+        let cs = ClipboardStore(glue: glue)
+        clipboardStore = cs
         sessionStore = SessionStore(glue: glue)
+        sessionStore.clipboardStore = cs
         Task {
             for await s in glue.states() {
                 rtcState = s
