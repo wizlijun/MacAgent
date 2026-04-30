@@ -52,6 +52,12 @@ export async function handleTurnCred(req: Request, env: Env): Promise<Response> 
   if (!callsRes.ok) {
     const errBody = await callsRes.text().catch(() => "<unreadable>");
     console.log("[turn/cred] Calls API failed", callsRes.status, errBody.slice(0, 500));
+    console.log("[turn/cred] Used KEY_ID prefix:", env.CF_CALLS_KEY_ID?.slice(0, 10), "len:", env.CF_CALLS_KEY_ID?.length);
+    const listRes = await fetch("https://rtc.live.cloudflare.com/v1/turn/keys", {
+      headers: { Authorization: `Bearer ${env.CF_CALLS_KEY_API_TOKEN}` },
+    });
+    const listBody = await listRes.text().catch(() => "<unreadable>");
+    console.log("[turn/cred] Available keys for this token:", listRes.status, listBody.slice(0, 800));
     return Response.json({ error: "turn_unavailable", status: callsRes.status }, { status: 503 });
   }
   const cred = (await callsRes.json()) as CallsCredResp;
