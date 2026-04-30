@@ -27,3 +27,6 @@ worker/.dev.vars
 
 # Logs
 *.log
+
+# Superpowers brainstorming canvas
+.superpowers/
