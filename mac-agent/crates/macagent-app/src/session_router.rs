@@ -348,12 +348,17 @@ impl SessionRouter {
     }
 
     async fn on_producer_disconnected(&self, sid: String, exit_status: Option<i32>) {
-        self.registry.unregister(&sid).await;
         let _ = exit_status; // not used in disconnect path
-        self.send_ctrl(CtrlPayload::SessionRemoved {
-            sid,
-            reason: "window_closed".into(),
-        });
+                             // Only send SessionRemoved if the session was still registered.
+                             // ProducerExit handler already calls unregister+SessionRemoved; a
+                             // subsequent socket-close must not fire a second event (iOS double-pop).
+        if self.registry.unregister(&sid).await.is_some() {
+            self.send_ctrl(CtrlPayload::SessionRemoved {
+                sid,
+                reason: "window_closed".into(),
+            });
+        }
+        // else: ProducerExit already removed it; no double-fire
     }
 
     fn send_ctrl(&self, payload: CtrlPayload) {

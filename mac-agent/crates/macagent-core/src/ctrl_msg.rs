@@ -231,11 +231,27 @@ pub struct SignedCtrl {
 }
 
 pub fn canonical_bytes(payload: &CtrlPayload) -> Vec<u8> {
-    // BTreeMap 保证 key 排序稳定
+    // Recursively sort all Object keys so nested fields (e.g. TerminalInput) are
+    // stable across Rust/Swift serializers. Swift JSONSerialization uses .sortedKeys
+    // which is recursive; we must match that behaviour here.
     let v = serde_json::to_value(payload).unwrap();
-    let sorted: BTreeMap<String, serde_json::Value> =
-        v.as_object().unwrap().clone().into_iter().collect();
-    serde_json::to_vec(&sorted).unwrap()
+    serde_json::to_vec(&sort_value(&v)).unwrap()
+}
+
+fn sort_value(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(map) => {
+            let sorted: BTreeMap<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, vv)| (k.clone(), sort_value(vv)))
+                .collect();
+            serde_json::to_value(&sorted).unwrap()
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(sort_value).collect())
+        }
+        _ => v.clone(),
+    }
 }
 
 pub fn sign(payload: CtrlPayload, shared_secret: &[u8]) -> SignedCtrl {

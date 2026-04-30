@@ -1,6 +1,4 @@
 //! Launcher configuration + AppleScript Terminal.app integration.
-// Public API is consumed by session_router (M3.5); allow dead_code until then.
-#![allow(dead_code)]
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

@@ -1,6 +1,4 @@
 //! Unix socket server: accept producer connections + frame codec.
-// Public API is consumed by session_router (M3.5); allow dead_code until then.
-#![allow(dead_code)]
 
 use crate::producer_registry::ProducerRegistry;
 use anyhow::Result;
@@ -31,6 +29,8 @@ pub enum ProducerEvent {
         rows: u16,
         source: SessionSource,
         frames_rx: mpsc::UnboundedReceiver<P2A>,
+        // FIXME(M3.8): consumed by run_socket_event_loop when session_router uses direct send_tx
+        #[allow(dead_code)]
         send_tx: mpsc::UnboundedSender<A2P>,
     },
     /// Producer connection closed (normal or error); registry already unregistered.

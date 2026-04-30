@@ -1,6 +1,4 @@
 //! Thread-safe sid → producer mapping.
-// Public API is consumed by agent_socket + session_router (M3.5); allow dead_code until then.
-#![allow(dead_code)]
 
 use macagent_core::ctrl_msg::{SessionInfo, SessionSource};
 use macagent_core::socket_proto::A2P;
@@ -92,11 +90,15 @@ impl ProducerRegistry {
         inner.sessions.remove(sid)
     }
 
+    // FIXME(M3.8): consumed by rtc_glue SessionList handler once wired up
+    #[allow(dead_code)]
     pub async fn get(&self, sid: &str) -> Option<SessionInfo> {
         let inner = self.inner.lock().await;
         inner.sessions.get(sid).cloned()
     }
 
+    // FIXME(M3.8): consumed by rtc_glue SessionList handler once wired up
+    #[allow(dead_code)]
     pub async fn list(&self) -> Vec<SessionInfo> {
         let inner = self.inner.lock().await;
         inner.sessions.values().cloned().collect()
