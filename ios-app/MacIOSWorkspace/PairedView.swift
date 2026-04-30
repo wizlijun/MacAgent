@@ -5,6 +5,8 @@ struct PairedView: View {
     @State var store: PairStore
     @State var pingResult: String?
     @State var pinging = false
+    @State var rtcState: GlueState = .idle
+    @State var rtcGlue: RtcGlue?
 
     var body: some View {
         VStack(spacing: 12) {
@@ -22,8 +24,31 @@ struct PairedView: View {
             if let r = pingResult { Text(r).font(.caption.monospaced()).multilineTextAlignment(.center) }
 
             Button("撤销并重新配对") { Task { await store.revoke() } }.buttonStyle(.bordered).tint(.red)
+
+            Divider()
+
+            Button(action: { Task { await connectRtc() } }) {
+                Text("Connect (M2)")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(rtcState == .connected)
+
+            Text("RTC: \(String(describing: rtcState))")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
         }
         .padding()
+    }
+
+    private func connectRtc() async {
+        let glue = RtcGlue(pair: pair)
+        rtcGlue = glue
+        Task {
+            for await s in glue.states() {
+                rtcState = s
+            }
+        }
+        await glue.run()
     }
 
     private func ping() async {
