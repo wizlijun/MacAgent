@@ -37,9 +37,32 @@ impl Default for GuiConfig {
 
 fn default_allowed_bundles() -> Vec<String> {
     vec![
+        // AI
         "com.openai.chat".into(),
         "com.anthropic.claude".into(),
+        "com.openai.codex".into(),
+        // Browsers
         "com.google.Chrome".into(),
+        "com.apple.Safari".into(),
+        // Editors
+        "com.microsoft.VSCode".into(),
+        "com.todesktop.230313mzl4w4u92".into(), // Cursor
+        // Terminals
+        "dev.warp.Warp-Stable".into(),
+        "com.googlecode.iterm2".into(),
+        "com.apple.Terminal".into(),
+        // Productivity / Design
+        "com.figma.Desktop".into(),
+        "notion.id".into(),
+        "com.linear".into(),
+        // Chat
+        "com.tinyspeck.slackmacgap".into(),
+        "com.hnc.Discord".into(),
+        "ru.keepcoder.Telegram".into(),
+        "com.tencent.xinWeChat".into(),
+        // Media / Office
+        "com.spotify.client".into(),
+        "com.microsoft.Word".into(),
     ]
 }
 
@@ -139,7 +162,23 @@ fn default_json5_string() -> &'static str {
     "allowed_bundles": [
       "com.openai.chat",
       "com.anthropic.claude",
-      "com.google.Chrome"
+      "com.openai.codex",
+      "com.google.Chrome",
+      "com.apple.Safari",
+      "com.microsoft.VSCode",
+      "com.todesktop.230313mzl4w4u92",
+      "dev.warp.Warp-Stable",
+      "com.googlecode.iterm2",
+      "com.apple.Terminal",
+      "com.figma.Desktop",
+      "notion.id",
+      "com.linear",
+      "com.tinyspeck.slackmacgap",
+      "com.hnc.Discord",
+      "ru.keepcoder.Telegram",
+      "com.tencent.xinWeChat",
+      "com.spotify.client",
+      "com.microsoft.Word"
     ]
   }
 }

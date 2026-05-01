@@ -12,10 +12,27 @@ fn read_allowed_bundles() -> Vec<String> {
             return cfg.gui.allowed_bundles;
         }
     }
+    // Match launcher::default_allowed_bundles when config file is missing/invalid.
     vec![
         "com.openai.chat".into(),
         "com.anthropic.claude".into(),
+        "com.openai.codex".into(),
         "com.google.Chrome".into(),
+        "com.apple.Safari".into(),
+        "com.microsoft.VSCode".into(),
+        "com.todesktop.230313mzl4w4u92".into(),
+        "dev.warp.Warp-Stable".into(),
+        "com.googlecode.iterm2".into(),
+        "com.apple.Terminal".into(),
+        "com.figma.Desktop".into(),
+        "notion.id".into(),
+        "com.linear".into(),
+        "com.tinyspeck.slackmacgap".into(),
+        "com.hnc.Discord".into(),
+        "ru.keepcoder.Telegram".into(),
+        "com.tencent.xinWeChat".into(),
+        "com.spotify.client".into(),
+        "com.microsoft.Word".into(),
     ]
 }
 
