@@ -1,4 +1,5 @@
 import Foundation
+import WebRTC
 
 enum GlueState: Equatable { case idle, fetchingTurn, signalingConnected, negotiating, connected, failed }
 
@@ -36,6 +37,19 @@ actor RtcGlue {
 
     private func setCtrlPayloadContinuation(_ c: AsyncStream<CtrlPayload>.Continuation) {
         ctrlPayloadContinuation = c
+    }
+
+    nonisolated func incomingVideoTracks() -> AsyncStream<RTCVideoTrack> {
+        // Return the stream directly; rtc is captured lazily via the actor
+        AsyncStream { continuation in
+            Task {
+                guard let rtc = await self.rtc else { continuation.finish(); return }
+                for await track in rtc.incomingVideoTracks() {
+                    continuation.yield(track)
+                }
+                continuation.finish()
+            }
+        }
     }
 
     func sendCtrl(_ payload: CtrlPayload) async {

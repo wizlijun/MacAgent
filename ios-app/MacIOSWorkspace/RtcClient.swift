@@ -13,6 +13,7 @@ actor RtcClient {
     private var candidateContinuation: AsyncStream<String>.Continuation?
     private var stateContinuation: AsyncStream<PeerState>.Continuation?
     private var ctrlContinuation: AsyncStream<String>.Continuation?
+    private var incomingVideoContinuation: AsyncStream<RTCVideoTrack>.Continuation?
 
     nonisolated func candidates() -> AsyncStream<String> {
         AsyncStream { continuation in
@@ -30,6 +31,12 @@ actor RtcClient {
         }
     }
 
+    nonisolated func incomingVideoTracks() -> AsyncStream<RTCVideoTrack> {
+        AsyncStream { continuation in
+            Task { await self.setIncomingVideoContinuation(continuation) }
+        }
+    }
+
     private func setCandidateContinuation(_ c: AsyncStream<String>.Continuation) {
         candidateContinuation = c
     }
@@ -38,6 +45,14 @@ actor RtcClient {
     }
     private func setCtrlContinuation(_ c: AsyncStream<String>.Continuation) {
         ctrlContinuation = c
+    }
+
+    private func setIncomingVideoContinuation(_ c: AsyncStream<RTCVideoTrack>.Continuation) {
+        incomingVideoContinuation = c
+    }
+
+    private func handleIncomingVideoTrack(_ track: RTCVideoTrack) {
+        incomingVideoContinuation?.yield(track)
     }
 
     init(iceServers: [[String: Any]]) {
@@ -75,6 +90,9 @@ actor RtcClient {
         }
         observer.onDataChannel = { [weak self] dc in
             Task { await self?.attachIncomingChannel(dc) }
+        }
+        observer.onVideoTrack = { [weak self] track in
+            Task { await self?.handleIncomingVideoTrack(track) }
         }
     }
 
@@ -175,6 +193,7 @@ actor RtcClient {
         candidateContinuation?.finish()
         stateContinuation?.finish()
         ctrlContinuation?.finish()
+        incomingVideoContinuation?.finish()
         RTCCleanupSSL()
     }
 }
@@ -183,10 +202,16 @@ final class PeerObserver: NSObject, RTCPeerConnectionDelegate, @unchecked Sendab
     nonisolated(unsafe) var onCandidate: ((RTCIceCandidate) -> Void)?
     nonisolated(unsafe) var onState: ((RTCIceConnectionState) -> Void)?
     nonisolated(unsafe) var onDataChannel: ((RTCDataChannel) -> Void)?
+    nonisolated(unsafe) var onVideoTrack: ((RTCVideoTrack) -> Void)?
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {}
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
+    func peerConnection(_ peerConnection: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver, streams mediaStreams: [RTCMediaStream]) {
+        if let videoTrack = rtpReceiver.track as? RTCVideoTrack {
+            onVideoTrack?(videoTrack)
+        }
+    }
     func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {}
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
         onState?(newState)

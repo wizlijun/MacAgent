@@ -21,8 +21,9 @@ final class SessionStore {
     private(set) var pendingLaunchVersion: Int = 0   // bumped on every mutation
     private(set) var connectedTick: Int = 0
 
-    var clipboardStore: ClipboardStore?  // PairedView 注入
-    var watcherStore: WatcherStore?     // PairedView 注入
+    var clipboardStore: ClipboardStore?   // PairedView 注入
+    var watcherStore: WatcherStore?      // PairedView 注入
+    var supervisionStore: SupervisionStore?  // PairedView 注入
 
     private let glue: RtcGlue?
 
@@ -139,6 +140,21 @@ final class SessionStore {
 
         case .watcherMatched(let sid, let watcherId, let lineText):
             watcherStore?.handleMatched(sid: sid, watcherId: watcherId, lineText: lineText)
+
+        case .windowsList(let windows):
+            supervisionStore?.handleWindowsList(windows)
+
+        case .supervisedAck(let supId, let entry):
+            supervisionStore?.handleSupervisedAck(supId: supId, entry: entry)
+
+        case .superviseReject(let windowId, let code, let reason):
+            supervisionStore?.handleSuperviseReject(windowId: windowId, code: code, reason: reason)
+
+        case .streamEnded(let supId, let reason):
+            supervisionStore?.handleStreamEnded(supId: supId, reason: reason)
+
+        case .supervisionList(let entries):
+            supervisionStore?.handleSupervisionList(entries)
 
         default:
             break

@@ -12,6 +12,7 @@ struct PairedView: View {
     @State private var sessionStore: SessionStore = SessionStore(glue: nil)
     @State private var clipboardStore: ClipboardStore?
     @State private var watcherStore: WatcherStore?
+    @State private var supervisionStore: SupervisionStore?
 
     var body: some View {
         NavigationStack {
@@ -60,6 +61,13 @@ struct PairedView: View {
                         }
                         .buttonStyle(.borderedProminent)
                     }
+
+                    if let ss = supervisionStore {
+                        NavigationLink(destination: WindowListView(store: ss)) {
+                            Label("桌面", systemImage: "display")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                 }
             }
             .padding()
@@ -73,9 +81,13 @@ struct PairedView: View {
         clipboardStore = cs
         let ws = WatcherStore(glue: glue)
         watcherStore = ws
+        let ss = SupervisionStore(glue: glue)
+        supervisionStore = ss
         sessionStore = SessionStore(glue: glue)
         sessionStore.clipboardStore = cs
         sessionStore.watcherStore = ws
+        sessionStore.supervisionStore = ss
+        Task { await ss.bindIncomingTracks() }
         Task {
             for await s in glue.states() {
                 rtcState = s
