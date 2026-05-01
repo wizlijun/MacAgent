@@ -195,6 +195,8 @@ struct SupervisionEntry: Codable, Equatable {
     let windowId: UInt32
     let appName: String
     let title: String
+    let width: UInt32
+    let height: UInt32
     let status: SupervisionStatus
     let source: SupervisionSource
     let startedTs: UInt64
@@ -203,7 +205,7 @@ struct SupervisionEntry: Codable, Equatable {
         case supId = "sup_id"
         case windowId = "window_id"
         case appName = "app_name"
-        case title, status, source
+        case title, width, height, status, source
         case startedTs = "started_ts"
     }
 }
@@ -269,6 +271,65 @@ enum SupervisionSource: Codable, Equatable {
 struct Viewport: Codable, Equatable {
     let width: UInt32
     let height: UInt32
+}
+
+// ---------------------------------------------------------------------------
+// GUI input types (M6)
+// ---------------------------------------------------------------------------
+
+enum GuiInput: Codable, Equatable {
+    case tap(x: Float, y: Float)
+    case scroll(dx: Float, dy: Float)
+    case keyText(text: String)
+    case keyCombo(modifiers: [KeyMod], key: String)
+
+    enum CodingKeys: String, CodingKey { case kind, x, y, dx, dy, text, modifiers, key }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .tap(let x, let y):
+            try c.encode("tap", forKey: .kind)
+            try c.encode(x, forKey: .x); try c.encode(y, forKey: .y)
+        case .scroll(let dx, let dy):
+            try c.encode("scroll", forKey: .kind)
+            try c.encode(dx, forKey: .dx); try c.encode(dy, forKey: .dy)
+        case .keyText(let text):
+            try c.encode("key_text", forKey: .kind)
+            try c.encode(text, forKey: .text)
+        case .keyCombo(let mods, let key):
+            try c.encode("key_combo", forKey: .kind)
+            try c.encode(mods, forKey: .modifiers)
+            try c.encode(key, forKey: .key)
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try c.decode(String.self, forKey: .kind)
+        switch kind {
+        case "tap":
+            self = .tap(x: try c.decode(Float.self, forKey: .x),
+                        y: try c.decode(Float.self, forKey: .y))
+        case "scroll":
+            self = .scroll(dx: try c.decode(Float.self, forKey: .dx),
+                           dy: try c.decode(Float.self, forKey: .dy))
+        case "key_text":
+            self = .keyText(text: try c.decode(String.self, forKey: .text))
+        case "key_combo":
+            self = .keyCombo(modifiers: try c.decode([KeyMod].self, forKey: .modifiers),
+                             key: try c.decode(String.self, forKey: .key))
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .kind, in: c,
+                debugDescription: "unknown GuiInput kind \(kind)"
+            )
+        }
+    }
+}
+
+enum KeyMod: String, Codable, Equatable {
+    case cmd, shift, opt, ctrl
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +466,10 @@ enum CtrlPayload: Codable, Equatable {
     case supervisionList(entries: [SupervisionEntry])
     case streamEnded(supId: String, reason: String)
 
+    // M6: GUI input injection
+    case guiInputCmd(supId: String, payload: GuiInput)
+    case guiInputAck(supId: String, code: String, message: String?)
+
     // MARK: - Coding keys
 
     private enum CodingKeys: String, CodingKey {
@@ -417,6 +482,7 @@ enum CtrlPayload: Codable, Equatable {
         case source, content
         case watcher_id, regex, name, watchers, line_text
         case window_id, viewport, sup_id, entry, windows, entries
+        case message
     }
 
     // MARK: - canonical bytes
@@ -562,6 +628,16 @@ enum CtrlPayload: Codable, Equatable {
         case .streamEnded(let supId, let reason):
             return try CanonicalJSON.encode(["type": "stream_ended",
                                              "sup_id": supId, "reason": reason])
+        case .guiInputCmd(let supId, let payload):
+            let encoder = JSONEncoder()
+            let payloadData = try encoder.encode(payload)
+            let payloadObj = try JSONSerialization.jsonObject(with: payloadData)
+            return try CanonicalJSON.encode(["type": "gui_input_cmd",
+                                             "sup_id": supId, "payload": payloadObj])
+        case .guiInputAck(let supId, let code, let message):
+            var d: [String: Any] = ["type": "gui_input_ack", "sup_id": supId, "code": code]
+            if let m = message { d["message"] = m } else { d["message"] = NSNull() }
+            return try CanonicalJSON.encode(d)
         }
     }
 
@@ -705,6 +781,15 @@ enum CtrlPayload: Codable, Equatable {
             try c.encode("stream_ended", forKey: .type)
             try c.encode(supId, forKey: .sup_id)
             try c.encode(reason, forKey: .reason)
+        case .guiInputCmd(let supId, let payload):
+            try c.encode("gui_input_cmd", forKey: .type)
+            try c.encode(supId, forKey: .sup_id)
+            try c.encode(payload, forKey: .payload)
+        case .guiInputAck(let supId, let code, let message):
+            try c.encode("gui_input_ack", forKey: .type)
+            try c.encode(supId, forKey: .sup_id)
+            try c.encode(code, forKey: .code)
+            try c.encode(message, forKey: .message)
         }
     }
 
@@ -870,6 +955,17 @@ enum CtrlPayload: Codable, Equatable {
             self = .streamEnded(
                 supId: try c.decode(String.self, forKey: .sup_id),
                 reason: try c.decode(String.self, forKey: .reason)
+            )
+        case "gui_input_cmd":
+            self = .guiInputCmd(
+                supId: try c.decode(String.self, forKey: .sup_id),
+                payload: try c.decode(GuiInput.self, forKey: .payload)
+            )
+        case "gui_input_ack":
+            self = .guiInputAck(
+                supId: try c.decode(String.self, forKey: .sup_id),
+                code: try c.decode(String.self, forKey: .code),
+                message: try c.decodeIfPresent(String.self, forKey: .message)
             )
 
         default:

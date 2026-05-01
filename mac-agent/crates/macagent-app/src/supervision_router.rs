@@ -134,6 +134,8 @@ impl SupervisionRouter {
                     window_id,
                     app_name: window.app_name.clone(),
                     title: window.title.clone(),
+                    width: window.width,
+                    height: window.height,
                     status: SupervisionStatus::Active,
                     source: SupervisionSource::Existing,
                     started_ts,

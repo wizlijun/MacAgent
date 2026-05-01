@@ -279,6 +279,17 @@ pub enum CtrlPayload {
         sup_id: String,
         reason: String,
     },
+
+    // M6: GUI input injection
+    GuiInputCmd {
+        sup_id: String,
+        payload: GuiInput,
+    },
+    GuiInputAck {
+        sup_id: String,
+        code: String,
+        message: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +314,8 @@ pub struct SupervisionEntry {
     pub window_id: u32,
     pub app_name: String,
     pub title: String,
+    pub width: u32,
+    pub height: u32,
     pub status: SupervisionStatus,
     pub source: SupervisionSource,
     pub started_ts: u64,
@@ -326,6 +339,28 @@ pub enum SupervisionSource {
 pub struct Viewport {
     pub width: u32,
     pub height: u32,
+}
+
+// ---------------------------------------------------------------------------
+// GUI input types (M6)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GuiInput {
+    Tap { x: f32, y: f32 },
+    Scroll { dx: f32, dy: f32 },
+    KeyText { text: String },
+    KeyCombo { modifiers: Vec<KeyMod>, key: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyMod {
+    Cmd,
+    Shift,
+    Opt,
+    Ctrl,
 }
 
 // ---------------------------------------------------------------------------
