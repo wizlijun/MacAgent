@@ -232,3 +232,6 @@ actor RtcGlue {
         return arr
     }
 }
+
+// M6.6: InputClient sends ctrl via RtcGlue.
+extension RtcGlue: InputClient.Glue {}
