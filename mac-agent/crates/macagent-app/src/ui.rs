@@ -14,6 +14,7 @@ use tokio::sync::mpsc as async_mpsc;
 use crate::agent_socket::AgentSocket;
 use crate::clipboard_bridge::ClipboardBridge;
 use crate::gui_capture::{GuiCapture, VideoConfig};
+use crate::input_injector::InputInjector;
 use crate::launcher::LauncherConfig;
 use crate::notify_engine::NotifyEngine;
 use crate::producer_registry::ProducerRegistry;
@@ -710,11 +711,27 @@ impl eframe::App for MacAgentApp {
                                 }
                             };
                             let supervision_router = Arc::new(SupervisionRouter::new(
-                                gui_capture,
+                                Arc::clone(&gui_capture),
                                 Arc::clone(&rtc_peer),
                                 video_track,
+                                ctrl_send_tx.clone(),
+                            ));
+                            let input_injector = Arc::new(InputInjector::new(
+                                Arc::clone(&gui_capture),
+                                Arc::clone(&supervision_router),
                                 ctrl_send_tx,
                             ));
+                            let injector_for_repoll = Arc::clone(&input_injector);
+                            tokio::spawn(async move {
+                                let mut tick = tokio::time::interval(
+                                    std::time::Duration::from_secs(60),
+                                );
+                                tick.tick().await; // first tick fires immediately — ignore
+                                loop {
+                                    tick.tick().await;
+                                    let _ = injector_for_repoll.refresh_ax();
+                                }
+                            });
                             let cfg = GlueConfig {
                                 worker_url,
                                 pair_id,
@@ -724,6 +741,7 @@ impl eframe::App for MacAgentApp {
                                 ctrl_recv_tx: Some(ctrl_recv_tx),
                                 ctrl_send_rx: Some(ctrl_send_rx),
                                 supervision_router: Some(supervision_router),
+                                input_injector: Some(input_injector),
                                 peer: Some(rtc_peer),
                             };
                             if let Err(e) = run_glue(cfg, state_tx, msg_tx).await {

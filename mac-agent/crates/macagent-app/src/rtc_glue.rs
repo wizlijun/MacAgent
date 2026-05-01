@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, Mutex};
 
+use crate::input_injector::InputInjector;
 use crate::supervision_router::SupervisionRouter;
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -53,6 +54,8 @@ pub struct GlueConfig {
         Option<std::sync::Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<CtrlPayload>>>>,
     /// supervision_router receives the same decoded payloads as ctrl_recv_tx.
     pub supervision_router: Option<Arc<SupervisionRouter>>,
+    /// input_injector handles `GuiInputCmd` payloads on the same drainer task.
+    pub input_injector: Option<Arc<InputInjector>>,
     /// Pre-built RtcPeer to use for signaling. If None, run_glue creates one.
     /// Sharing one peer with SupervisionRouter ensures the video track lives on
     /// the same PeerConnection that iOS negotiates with.
@@ -142,6 +145,7 @@ pub async fn run_glue(
     let ctrl_recv_tx = cfg.ctrl_recv_tx.clone();
     let ctrl_send_rx = cfg.ctrl_send_rx.clone();
     let supervision_router = cfg.supervision_router.clone();
+    let input_injector = cfg.input_injector.clone();
     let provided_peer = cfg.peer.clone();
     let _ = state_tx.send(GlueState::FetchingTurn);
     let peer = match provided_peer {
@@ -177,10 +181,20 @@ pub async fn run_glue(
     // serializes ListWindows/SuperviseExisting/Remove on `active`.
     let (sup_tx, mut sup_rx) = mpsc::unbounded_channel::<CtrlPayload>();
     if let Some(sr) = supervision_router.clone() {
+        let injector = input_injector.clone();
         tokio::spawn(async move {
             while let Some(payload) = sup_rx.recv().await {
-                if let Err(e) = sr.handle_ctrl(payload).await {
-                    eprintln!("[glue] supervision_router error: {e}");
+                match payload {
+                    CtrlPayload::GuiInputCmd { sup_id, payload } => {
+                        if let Some(ij) = injector.as_ref() {
+                            ij.handle_input(sup_id, payload).await;
+                        }
+                    }
+                    other => {
+                        if let Err(e) = sr.handle_ctrl(other).await {
+                            eprintln!("[glue] supervision_router error: {e}");
+                        }
+                    }
                 }
             }
         });

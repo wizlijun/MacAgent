@@ -4,7 +4,6 @@ mod agent_socket;
 mod clipboard_bridge;
 #[allow(dead_code)]
 mod gui_capture;
-#[allow(dead_code)]
 mod input_injector;
 mod keychain;
 mod launcher;
