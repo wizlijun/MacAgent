@@ -3,7 +3,7 @@
 //! States: NotPaired → Pairing (QR shown) → Paired
 //! Transitions are driven by results arriving from the reqwest task via mpsc.
 
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -100,6 +100,8 @@ pub struct MacAgentApp {
     _router: std::sync::Arc<SessionRouter>,
     /// Swappable notify engine wrapper; shared with SessionRouter and AgentSocket.
     notify_engine_cell: std::sync::Arc<std::sync::RwLock<std::sync::Arc<NotifyEngine>>>,
+    /// Shared slot populated by Connect spawn so `update()` can read AX status each frame.
+    pub input_injector: Arc<Mutex<Option<Arc<InputInjector>>>>,
 }
 
 impl MacAgentApp {
@@ -228,6 +230,7 @@ impl MacAgentApp {
             ctrl_recv_rx: ctrl_recv_rx_arc,
             _router: router,
             notify_engine_cell,
+            input_injector: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -635,10 +638,26 @@ impl eframe::App for MacAgentApp {
         while self.glue_msg_rx.try_recv().is_ok() {}
 
         let glue_state = self.glue_state;
+        let injector = self.input_injector.lock().unwrap().clone();
+        let ax_granted = injector.as_ref().map(|i| i.check_ax());
         let transition = egui::CentralPanel::default()
             .show(ctx, |ui| {
                 ui.heading(format!("macagent v{}", macagent_core::version()));
                 ui.separator();
+                if matches!(self.state, PairState::Paired { .. }) && ax_granted == Some(false) {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            "⚠️ Accessibility 未授权 — 输入注入不可用",
+                        );
+                        if ui.button("Open System Settings").clicked() {
+                            let _ = std::process::Command::new("open")
+                                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                                .spawn();
+                        }
+                    });
+                    ui.separator();
+                }
                 Self::render_state(&self.state, &self.last_error, glue_state, ui)
             })
             .inner;
@@ -678,6 +697,7 @@ impl eframe::App for MacAgentApp {
                         let ctrl_send_rx = Arc::clone(&self.ctrl_send_rx);
                         let state_tx = self.glue_state_tx.clone();
                         let msg_tx = self.glue_msg_tx.clone();
+                        let injector_slot = Arc::clone(&self.input_injector);
 
                         self.runtime.spawn(async move {
                             use macagent_core::rtc_peer::RtcPeer;
@@ -721,6 +741,7 @@ impl eframe::App for MacAgentApp {
                                 Arc::clone(&supervision_router),
                                 ctrl_send_tx,
                             ));
+                            *injector_slot.lock().unwrap() = Some(Arc::clone(&input_injector));
                             let injector_for_repoll = Arc::clone(&input_injector);
                             tokio::spawn(async move {
                                 let mut tick = tokio::time::interval(
