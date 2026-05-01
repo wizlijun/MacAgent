@@ -1,11 +1,5 @@
 //! GuiCapture — screen-recording permission check, window listing, and
 //! per-window video streaming to a WebRTC track.
-//!
-//! Implementation status (M5.2):
-//!   - check_permission: REAL  (CGPreflightScreenCaptureAccess)
-//!   - list_windows:     REAL  (CGWindowListCopyWindowInfo)
-//!   - supervise_existing / stream: STUB (dummy byte stream, ~30 fps)
-//!   - encoder: STUB (replace with VTCompressionSession in M5.2.5)
 
 pub mod perm;
 
@@ -21,6 +15,7 @@ use std::sync::{Arc, Mutex};
 
 type StreamEndedCb = Arc<dyn Fn(String, String) + Send + Sync>;
 
+#[derive(Clone)]
 pub struct VideoConfig {
     pub fps: u32,
     pub bitrate_kbps: u32,
@@ -38,7 +33,6 @@ impl Default for VideoConfig {
 }
 
 pub struct GuiCapture {
-    #[allow(dead_code)]
     config: VideoConfig,
     streams: Arc<stream::StreamManager>,
     on_ended: Mutex<Option<StreamEndedCb>>,
@@ -65,17 +59,25 @@ impl GuiCapture {
     }
 
     /// Begin streaming `window_id` into `track` for the given supervision id.
-    ///
-    /// STUB (M5.2): starts a dummy byte-stream encoder. Replace with SCStream
-    /// in M5.2.5.
     pub async fn supervise_existing(
         &self,
         sup_id: String,
-        _window_id: u32,
+        window_id: u32,
         track: VideoTrackHandle,
     ) -> Result<()> {
         let track = Arc::new(track);
-        self.streams.start(sup_id, track);
+        let end_rx = self
+            .streams
+            .start(sup_id.clone(), window_id, track, &self.config)?;
+        let cb = self.on_ended.lock().unwrap().clone();
+        let sid = sup_id;
+        tokio::spawn(async move {
+            if let Ok(reason) = end_rx.await {
+                if let Some(cb) = cb {
+                    cb(sid, reason);
+                }
+            }
+        });
         Ok(())
     }
 
@@ -85,10 +87,8 @@ impl GuiCapture {
         Ok(())
     }
 
-    /// Register a callback invoked when a stream ends unexpectedly.
-    ///
-    /// STUB (M5.2): never fires because the dummy encoder runs until
-    /// `remove_supervised` is called. Wire up in M5.2.5 via SCStream delegate.
+    /// Register a callback invoked when a stream ends unexpectedly. Receives
+    /// `(sup_id, reason)` where reason is e.g. `"stream_error: ..."`.
     pub fn on_stream_ended(&self, cb: impl Fn(String, String) + Send + Sync + 'static) {
         *self.on_ended.lock().unwrap() = Some(Arc::new(cb) as StreamEndedCb);
     }
