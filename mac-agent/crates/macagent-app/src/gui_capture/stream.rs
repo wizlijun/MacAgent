@@ -43,8 +43,18 @@ struct FramePayload {
 // never mutate the buffer concurrently (encode_frame only reads).
 unsafe impl Send for FramePayload {}
 
+/// Send-able slot holding the most recent retained `CVPixelBuffer`.
+struct LastFrame(objc2_core_foundation::CFRetained<ObjcCVPixelBuffer>);
+
+// SAFETY: same rationale as `FramePayload` — Core Foundation refcounting is
+// thread-safe; the buffer is read-only after capture.
+unsafe impl Send for LastFrame {}
+
+type LastFrameSlot = Arc<Mutex<Option<LastFrame>>>;
+
 struct FrameSink {
     tx: SyncSender<FramePayload>,
+    last_frame: LastFrameSlot,
     start_inst: Instant,
 }
 
@@ -68,6 +78,8 @@ impl SCStreamOutputTrait for FrameSink {
         // the refcount so the buffer outlives the sample we drop on return.
         let retained = unsafe { objc2_core_foundation::CFRetained::retain(non_null) };
         let pts = self.start_inst.elapsed().as_micros() as i64;
+        // Stash a clone for demote_to_armed before potentially dropping via try_send.
+        *self.last_frame.lock().unwrap() = Some(LastFrame(retained.clone()));
         let _ = self.tx.try_send(FramePayload {
             pixel_buffer: retained,
             pts_micros: pts,
@@ -92,6 +104,7 @@ struct ActiveStream {
     stop_flag: Arc<AtomicBool>,
     encoder_thread: Option<JoinHandle<()>>,
     tokio_task: tokio::task::JoinHandle<()>,
+    last_frame: LastFrameSlot,
 }
 
 impl ActiveStream {
@@ -105,6 +118,11 @@ impl ActiveStream {
             let _ = h.join();
         }
         self.tokio_task.abort();
+    }
+
+    /// Take the most recent retained pixel buffer, if any.
+    fn take_last_frame(&self) -> Option<objc2_core_foundation::CFRetained<ObjcCVPixelBuffer>> {
+        self.last_frame.lock().unwrap().take().map(|f| f.0)
     }
 }
 
@@ -177,9 +195,11 @@ impl StreamManager {
             end_tx: Mutex::new(Some(end_tx)),
         };
         let mut sc_stream = SCStream::new_with_delegate(&filter, &config, delegate);
+        let last_frame: LastFrameSlot = Arc::new(Mutex::new(None));
         sc_stream.add_output_handler(
             FrameSink {
                 tx: frame_tx,
+                last_frame: last_frame.clone(),
                 start_inst: Instant::now(),
             },
             SCStreamOutputType::Screen,
@@ -233,6 +253,7 @@ impl StreamManager {
             stop_flag,
             encoder_thread: Some(encoder_thread),
             tokio_task,
+            last_frame,
         };
 
         let prev = {
@@ -262,6 +283,24 @@ impl StreamManager {
         } else {
             false
         }
+    }
+
+    /// Stop the active stream for `sup_id` and return its last captured frame.
+    pub fn stop_with_last_frame(
+        &self,
+        sup_id: &str,
+    ) -> Option<objc2_core_foundation::CFRetained<ObjcCVPixelBuffer>> {
+        let entry = {
+            let mut guard = self.active.lock().unwrap();
+            match &*guard {
+                Some((id, _)) if id == sup_id => guard.take(),
+                _ => None,
+            }
+        };
+        let (_, active) = entry?;
+        let frame = active.take_last_frame();
+        active.stop();
+        frame
     }
 }
 

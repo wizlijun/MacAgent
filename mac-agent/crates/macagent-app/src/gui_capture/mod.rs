@@ -6,7 +6,6 @@ pub mod perm;
 mod annexb;
 mod encoder;
 mod stream;
-#[allow(dead_code)]
 mod thumbnail;
 pub(crate) mod windows;
 
@@ -106,6 +105,12 @@ impl GuiCapture {
     pub async fn remove_supervised(&self, sup_id: &str) -> Result<()> {
         self.streams.stop(sup_id);
         Ok(())
+    }
+
+    /// Stop the stream for `sup_id` and return its last frame as a base64 JPEG.
+    pub fn demote_to_armed(&self, sup_id: &str) -> Option<String> {
+        let pb = self.streams.stop_with_last_frame(sup_id)?;
+        thumbnail::cvpixelbuffer_to_jpeg_base64(&pb).ok()
     }
 
     /// Register a callback invoked when a stream ends unexpectedly. Receives
