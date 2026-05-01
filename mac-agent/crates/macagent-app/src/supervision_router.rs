@@ -343,12 +343,15 @@ impl SupervisionRouter {
 
         // Auto-promote next armed if we removed the active.
         if let Some(next) = next_armed {
-            // Re-use the current entry's known size as a viewport hint;
+            // Use the promoted entry's own size as the viewport hint;
             // iOS will follow up with ViewportChanged on its next layout.
-            let viewport = Viewport {
-                w: entry.width.max(1),
-                h: entry.height.max(1),
+            let next_entry_size = {
+                let reg = self.registry.lock().unwrap();
+                reg.entries.get(&next).map(|e| (e.width, e.height))
             };
+            let viewport = next_entry_size
+                .map(|(w, h)| Viewport { w: w.max(1), h: h.max(1) })
+                .unwrap_or(Viewport { w: 393, h: 760 });
             self.set_active(next, viewport).await?;
         } else {
             self.emit_supervision_list();
@@ -432,17 +435,31 @@ impl SupervisionRouter {
             .supervise_existing(new_sup.clone(), new_window_id, self.video_track.clone())
             .await
         {
-            // Rollback: drop the new entry from the registry; emit reject.
+            // Rollback: the old SCStream is already gone (demote_to_armed
+            // stopped it) and the new stream failed to start, so we have no
+            // live Active. Drop the new entry, demote the old back to Armed
+            // (preserving its captured thumb), clear active_sup, emit reject
+            // + a fresh SupervisionList so iOS clears the stale Active tile.
             {
                 let mut reg = self.registry.lock().unwrap();
                 reg.entries.remove(&new_sup);
                 reg.pids.remove(&new_sup);
+                if let Some(old_sup) = old_active.as_ref() {
+                    if old_sup != &new_sup {
+                        if let Some(e) = reg.entries.get_mut(old_sup) {
+                            e.status = SupStatus::Armed;
+                            e.thumb_jpeg_b64 = demoted_thumb.clone();
+                        }
+                    }
+                }
+                reg.active_sup = None;
             }
             let _ = self.ctrl_tx.send(CtrlPayload::SuperviseReject {
                 window_id: new_window_id,
                 code: "supervise_failed".into(),
                 reason: format!("{e:#}"),
             });
+            self.emit_supervision_list();
             return Ok(());
         }
 

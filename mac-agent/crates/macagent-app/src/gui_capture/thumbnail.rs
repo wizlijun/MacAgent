@@ -51,7 +51,6 @@ extern "C" {
 }
 
 /// Encode the buffer to a base64 JPEG string at THUMB_W x THUMB_H, Q70.
-#[allow(dead_code)] // wired in by M7.6
 pub fn cvpixelbuffer_to_jpeg_base64(pb: &CVPixelBuffer) -> Result<String> {
     catch_unwind(AssertUnwindSafe(|| {
         let cgimage = create_cgimage_from_pb(pb).context("create CGImage from CVPixelBuffer")?;

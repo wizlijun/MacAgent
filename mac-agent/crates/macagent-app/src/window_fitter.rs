@@ -130,8 +130,18 @@ unsafe fn find_ax_window(pid: i32, target: &WindowRect) -> Result<AXUIElementRef
         }
         let mut sz = CGSize { width: 0.0, height: 0.0 };
         let mut pt = CGPoint { x: 0.0, y: 0.0 };
-        AXValueGetValue(size_val, K_AX_VALUE_TYPE_CG_SIZE, &mut sz as *mut _ as *mut c_void);
-        AXValueGetValue(pos_val, K_AX_VALUE_TYPE_CG_POINT, &mut pt as *mut _ as *mut c_void);
+        // Skip windows where AX size/position decode fails — otherwise a
+        // zero-rect candidate can win the closest-bounds search.
+        if !AXValueGetValue(size_val, K_AX_VALUE_TYPE_CG_SIZE, &mut sz as *mut _ as *mut c_void) {
+            release(size_val);
+            release(pos_val);
+            continue;
+        }
+        if !AXValueGetValue(pos_val, K_AX_VALUE_TYPE_CG_POINT, &mut pt as *mut _ as *mut c_void) {
+            release(size_val);
+            release(pos_val);
+            continue;
+        }
         release(size_val);
         release(pos_val);
 
@@ -178,8 +188,17 @@ unsafe fn read_window_rect(win: AXUIElementRef) -> Result<WindowRect> {
     }
     let mut sz = CGSize { width: 0.0, height: 0.0 };
     let mut pt = CGPoint { x: 0.0, y: 0.0 };
-    AXValueGetValue(sz_val, K_AX_VALUE_TYPE_CG_SIZE, &mut sz as *mut _ as *mut c_void);
-    AXValueGetValue(pos_val, K_AX_VALUE_TYPE_CG_POINT, &mut pt as *mut _ as *mut c_void);
+    // Fail loudly on decode error so callers don't cache a zero rect as `original_frame`.
+    if !AXValueGetValue(sz_val, K_AX_VALUE_TYPE_CG_SIZE, &mut sz as *mut _ as *mut c_void) {
+        release(sz_val);
+        release(pos_val);
+        return Err(anyhow!("AXValueGetValue(size) failed"));
+    }
+    if !AXValueGetValue(pos_val, K_AX_VALUE_TYPE_CG_POINT, &mut pt as *mut _ as *mut c_void) {
+        release(sz_val);
+        release(pos_val);
+        return Err(anyhow!("AXValueGetValue(position) failed"));
+    }
     release(sz_val);
     release(pos_val);
     Ok(WindowRect {
@@ -229,7 +248,10 @@ pub fn fit(
     Ok(original)
 }
 
-/// Restore the window's original size and position.
+/// Restore the window's original frame.
+/// Heuristic: AX search picks the closest-bounds window — may pick a sibling
+/// of the same app if its bounds happen to be closer to `original` than the
+/// resized target. Acceptable for v0.1; M8 polish uses _AXUIElementGetWindow.
 pub fn restore(window_id: u32, owner_pid: i32, original: &WindowRect) -> Result<()> {
     let _ = window_id;
     // SAFETY: AX FFI block — symmetric to `fit`; CF refs are released after set.

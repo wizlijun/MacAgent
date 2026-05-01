@@ -11,6 +11,7 @@ struct GuiStreamDetailView: View {
     @State private var contentSize: CGSize = .zero
     @State private var showRetryBanner = false
     @State private var fitToastVisible = false
+    @State private var fitToastGen = 0
 
     init(store: SupervisionStore, entry: SupervisionEntry) {
         self.store = store
@@ -72,8 +73,13 @@ struct GuiStreamDetailView: View {
         }
         .onChange(of: store.lastFitFailed) { _, new in
             guard new != nil else { return }
+            // Bump generation so a stale dismiss closure can't kill a fresher toast.
+            fitToastGen += 1
+            let gen = fitToastGen
             fitToastVisible = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { fitToastVisible = false }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                if fitToastGen == gen { fitToastVisible = false }
+            }
         }
     }
 
