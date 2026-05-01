@@ -64,6 +64,28 @@ pub async fn load_or_init() -> Result<LauncherConfig> {
     Ok(cfg)
 }
 
+/// Sync read of `launchers.json5` (for non-async eframe contexts); falls back to defaults.
+pub fn load_or_init_blocking() -> std::io::Result<LauncherConfig> {
+    let path = config_path();
+    if let Ok(text) = std::fs::read_to_string(&path) {
+        if let Ok(cfg) = json5::from_str::<LauncherConfig>(&text) {
+            return Ok(cfg);
+        }
+    }
+    Ok(LauncherConfig::default_config())
+}
+
+/// Persist `cfg` to `launchers.json5` as pretty JSON (json5 reads JSON natively).
+pub fn save_config(cfg: &LauncherConfig) -> std::io::Result<()> {
+    let path = config_path();
+    let json = serde_json::to_string_pretty(cfg)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, json)
+}
+
 impl LauncherConfig {
     pub fn default_config() -> Self {
         Self {

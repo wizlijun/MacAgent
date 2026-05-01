@@ -105,6 +105,8 @@ pub struct MacAgentApp {
     pub input_injector: Arc<Mutex<Option<Arc<InputInjector>>>>,
     /// 1s-TTL cache for onboarding permission probes (eframe runs at 60fps).
     perm_cache: Option<(Instant, onboarding::PermissionStatus, onboarding::PermissionStatus)>,
+    /// Text buffer for the "add bundle id" input in the whitelist editor.
+    whitelist_input: String,
 }
 
 impl MacAgentApp {
@@ -235,6 +237,7 @@ impl MacAgentApp {
             notify_engine_cell,
             input_injector: Arc::new(Mutex::new(None)),
             perm_cache: None,
+            whitelist_input: String::new(),
         })
     }
 
@@ -499,6 +502,46 @@ enum StateTransition {
     Revoke,
 }
 
+/// CollapsingHeader UI for editing `gui.allowed_bundles` in `launchers.json5`.
+fn render_whitelist_editor(ui: &mut egui::Ui, whitelist_input: &mut String) {
+    egui::CollapsingHeader::new("白名单 App")
+        .default_open(false)
+        .show(ui, |ui| match crate::launcher::load_or_init_blocking() {
+            Ok(mut cfg) => {
+                let mut changed = false;
+                let mut to_remove: Option<usize> = None;
+                for (idx, bid) in cfg.gui.allowed_bundles.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.monospace(bid);
+                        if ui.small_button("🗑").clicked() {
+                            to_remove = Some(idx);
+                        }
+                    });
+                }
+                if let Some(idx) = to_remove {
+                    cfg.gui.allowed_bundles.remove(idx);
+                    changed = true;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("新增 bundle id:");
+                    ui.text_edit_singleline(whitelist_input);
+                    if ui.button("添加").clicked() && !whitelist_input.trim().is_empty() {
+                        cfg.gui
+                            .allowed_bundles
+                            .push(std::mem::take(whitelist_input).trim().to_string());
+                        changed = true;
+                    }
+                });
+                if changed {
+                    let _ = crate::launcher::save_config(&cfg);
+                }
+            }
+            Err(_) => {
+                ui.label("无法读取配置文件");
+            }
+        });
+}
+
 // ── polling helper ──────────────────────────────────────────────────────────
 
 async fn poll_room_event(worker_url: String, room_id: String, tx: mpsc::SyncSender<UiEvent>) {
@@ -664,6 +707,11 @@ impl eframe::App for MacAgentApp {
         } else {
             None
         };
+        let is_paired = matches!(self.state, PairState::Paired { .. });
+        // Borrow individual fields up front so the closure doesn't capture all of `self`.
+        let state_ref = &self.state;
+        let last_error_ref = &self.last_error;
+        let whitelist_input = &mut self.whitelist_input;
         let transition = egui::CentralPanel::default()
             .show(ctx, |ui| {
                 ui.heading(format!("macagent v{}", macagent_core::version()));
@@ -694,7 +742,10 @@ impl eframe::App for MacAgentApp {
                         ui.separator();
                     }
                 }
-                Self::render_state(&self.state, &self.last_error, glue_state, ui)
+                if is_paired {
+                    render_whitelist_editor(ui, whitelist_input);
+                }
+                Self::render_state(state_ref, last_error_ref, glue_state, ui)
             })
             .inner;
 
