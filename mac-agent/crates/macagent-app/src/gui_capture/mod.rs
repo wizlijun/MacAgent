@@ -6,6 +6,8 @@ pub mod perm;
 mod annexb;
 mod encoder;
 mod stream;
+#[allow(dead_code)]
+mod thumbnail;
 pub(crate) mod windows;
 
 use anyhow::Result;

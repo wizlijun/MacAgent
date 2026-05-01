@@ -2152,6 +2152,7 @@ dependencies = [
  "dirs",
  "eframe",
  "egui",
+ "foreign-types",
  "image",
  "json5",
  "libc",

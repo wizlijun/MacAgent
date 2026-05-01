@@ -38,6 +38,7 @@ regex = { workspace = true }
 
 core-graphics = { workspace = true }
 core-foundation = { workspace = true }
+foreign-types = "0.5"
 screencapturekit = { workspace = true }
 core-media-rs = { workspace = true }
 core-video-rs = { workspace = true }
