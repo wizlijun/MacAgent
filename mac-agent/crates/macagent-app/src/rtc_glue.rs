@@ -53,6 +53,10 @@ pub struct GlueConfig {
         Option<std::sync::Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<CtrlPayload>>>>,
     /// supervision_router receives the same decoded payloads as ctrl_recv_tx.
     pub supervision_router: Option<Arc<SupervisionRouter>>,
+    /// Pre-built RtcPeer to use for signaling. If None, run_glue creates one.
+    /// Sharing one peer with SupervisionRouter ensures the video track lives on
+    /// the same PeerConnection that iOS negotiates with.
+    pub peer: Option<Arc<RtcPeer>>,
 }
 
 // ── Wire frame ───────────────────────────────────────────────────────────────
@@ -138,8 +142,15 @@ pub async fn run_glue(
     let ctrl_recv_tx = cfg.ctrl_recv_tx.clone();
     let ctrl_send_rx = cfg.ctrl_send_rx.clone();
     let supervision_router = cfg.supervision_router.clone();
+    let provided_peer = cfg.peer.clone();
     let _ = state_tx.send(GlueState::FetchingTurn);
-    let ice = fetch_turn_cred(&cfg).await?;
+    let peer = match provided_peer {
+        Some(p) => p,
+        None => {
+            let ice = fetch_turn_cred(&cfg).await?;
+            Arc::new(RtcPeer::new(ice).await?)
+        }
+    };
 
     let _ = state_tx.send(GlueState::SignalingConnected);
     let signaling = connect_signaling(&cfg).await?;
@@ -151,7 +162,6 @@ pub async fn run_glue(
     let peer_pub = X25519Pub::from_b64(&cfg.peer_pubkey_b64)?;
     let shared_secret = derive_shared_secret(&cfg.local_keys, &peer_pub)?;
 
-    let peer = Arc::new(RtcPeer::new(ice).await?);
     let ctrl = Arc::new(peer.open_ctrl_channel().await?);
 
     // Channels for heartbeat ack signalling and miss notification
@@ -163,7 +173,19 @@ pub async fn run_glue(
     let ctrl_for_cb = Arc::clone(&ctrl);
     let ss_for_cb = shared_secret;
     let router_recv_tx = ctrl_recv_tx.clone();
-    let sup_router = supervision_router.clone();
+    // Dedicated channel for supervision payloads so a single drainer task
+    // serializes ListWindows/SuperviseExisting/Remove on `active`.
+    let (sup_tx, mut sup_rx) = mpsc::unbounded_channel::<CtrlPayload>();
+    if let Some(sr) = supervision_router.clone() {
+        tokio::spawn(async move {
+            while let Some(payload) = sup_rx.recv().await {
+                if let Err(e) = sr.handle_ctrl(payload).await {
+                    eprintln!("[glue] supervision_router error: {e}");
+                }
+            }
+        });
+    }
+    let has_sup_router = supervision_router.is_some();
     ctrl.on_message(move |m| {
         // Try to parse as SignedCtrl and handle heartbeat variants
         if let Ok(signed) = serde_json::from_str::<macagent_core::ctrl_msg::SignedCtrl>(&m) {
@@ -201,15 +223,10 @@ pub async fn run_glue(
                         if let Some(ref tx) = router_recv_tx {
                             let _ = tx.send(signed.payload.clone());
                         }
-                        // Forward to supervision_router if wired
-                        if let Some(ref sr) = sup_router {
-                            let sr = Arc::clone(sr);
-                            let payload = signed.payload.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = sr.handle_ctrl(payload).await {
-                                    eprintln!("[glue] supervision_router error: {e}");
-                                }
-                            });
+                        // Forward to supervision_router via dedicated mpsc so
+                        // payloads are awaited serially on a single drainer task.
+                        if has_sup_router {
+                            let _ = sup_tx.send(signed.payload.clone());
                         }
                     }
                 }
@@ -380,15 +397,23 @@ pub async fn run_glue(
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 async fn fetch_turn_cred(cfg: &GlueConfig) -> Result<Vec<IceServer>> {
+    fetch_turn_cred_for(&cfg.worker_url, &cfg.pair_id, &cfg.mac_device_secret_b64).await
+}
+
+pub async fn fetch_turn_cred_for(
+    worker_url: &str,
+    pair_id: &str,
+    mac_device_secret_b64: &str,
+) -> Result<Vec<IceServer>> {
     let ts: u64 = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
-    let secret = B64.decode(&cfg.mac_device_secret_b64)?;
+    let secret = B64.decode(mac_device_secret_b64)?;
     let sig = B64.encode(hmac_sign(
         &secret,
-        format!("turn-cred|{}|{}", cfg.pair_id, ts).as_bytes(),
+        format!("turn-cred|{}|{}", pair_id, ts).as_bytes(),
     ));
     let resp: serde_json::Value = reqwest::Client::new()
-        .post(format!("{}/turn/cred", cfg.worker_url))
-        .json(&serde_json::json!({ "pair_id": &cfg.pair_id, "ts": ts, "sig": sig }))
+        .post(format!("{}/turn/cred", worker_url))
+        .json(&serde_json::json!({ "pair_id": pair_id, "ts": ts, "sig": sig }))
         .send()
         .await?
         .error_for_status()?

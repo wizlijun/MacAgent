@@ -13,12 +13,13 @@ use crate::gui_capture::GuiCapture;
 
 pub struct SupervisionRouter {
     gui_capture: Arc<GuiCapture>,
+    #[allow(dead_code)]
     rtc_peer: Arc<RtcPeer>,
     ctrl_tx: mpsc::UnboundedSender<CtrlPayload>,
     /// 当前活跃的 supervision (M5 同时只有一个)
     active: Mutex<Option<ActiveSupervision>>,
-    /// video track 实例（在第一次 supervise 时创建并复用）
-    video_track: Mutex<Option<VideoTrackHandle>>,
+    /// video track 实例（在 PeerConnection 建立前由 ui.rs 创建并注入）
+    video_track: VideoTrackHandle,
 }
 
 #[allow(dead_code)]
@@ -34,6 +35,7 @@ impl SupervisionRouter {
     pub fn new(
         gui_capture: Arc<GuiCapture>,
         rtc_peer: Arc<RtcPeer>,
+        video_track: VideoTrackHandle,
         ctrl_tx: mpsc::UnboundedSender<CtrlPayload>,
     ) -> Self {
         Self {
@@ -41,7 +43,7 @@ impl SupervisionRouter {
             rtc_peer,
             ctrl_tx,
             active: Mutex::new(None),
-            video_track: Mutex::new(None),
+            video_track,
         }
     }
 
@@ -111,14 +113,8 @@ impl SupervisionRouter {
             });
         }
 
-        // 3. 准备 video track（首次创建，后续复用）
-        let mut track_guard = self.video_track.lock().await;
-        if track_guard.is_none() {
-            let track = self.rtc_peer.add_local_h264_video_track().await?;
-            *track_guard = Some(track);
-        }
-        let track = track_guard.as_ref().unwrap().clone();
-        drop(track_guard);
+        // 3. 复用启动时创建的 video track
+        let track = self.video_track.clone();
 
         // 4. 启动 GuiCapture
         let sup_id = Uuid::new_v4().to_string()[..8].to_string();

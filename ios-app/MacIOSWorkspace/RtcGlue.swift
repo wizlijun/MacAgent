@@ -9,6 +9,7 @@ actor RtcGlue {
     private var ws: SignalingClient?
     private var stateContinuation: AsyncStream<GlueState>.Continuation?
     private var ctrlPayloadContinuation: AsyncStream<CtrlPayload>.Continuation?
+    private var incomingVideoContinuation: AsyncStream<RTCVideoTrack>.Continuation?
 
     // Heartbeat state (iOS is answerer; Mac sends hb, iOS sends hb_ack)
     private var hbAckCount: Int = 0
@@ -40,16 +41,19 @@ actor RtcGlue {
     }
 
     nonisolated func incomingVideoTracks() -> AsyncStream<RTCVideoTrack> {
-        // Return the stream directly; rtc is captured lazily via the actor
+        // Stash the continuation up-front so callers that bind before run()
+        // completes still receive forwarded tracks once rtc is wired in run().
         AsyncStream { continuation in
-            Task {
-                guard let rtc = await self.rtc else { continuation.finish(); return }
-                for await track in rtc.incomingVideoTracks() {
-                    continuation.yield(track)
-                }
-                continuation.finish()
-            }
+            Task { await self.setIncomingVideoContinuation(continuation) }
         }
+    }
+
+    private func setIncomingVideoContinuation(_ c: AsyncStream<RTCVideoTrack>.Continuation) {
+        incomingVideoContinuation = c
+    }
+
+    private func forwardVideo(_ track: RTCVideoTrack) {
+        incomingVideoContinuation?.yield(track)
     }
 
     func sendCtrl(_ payload: CtrlPayload) async {
@@ -113,6 +117,14 @@ actor RtcGlue {
             }
         }
 
+        // Forward incoming video tracks to any continuation registered via
+        // incomingVideoTracks(); registered continuation may pre-date run().
+        Task {
+            for await track in rtc.incomingVideoTracks() {
+                await self.forwardVideo(track)
+            }
+        }
+
         // Create and send offer
         do {
             let offer = try await rtc.createOffer()
@@ -154,6 +166,7 @@ actor RtcGlue {
                 break
             }
         }
+        incomingVideoContinuation?.finish()
     }
 
     private func handleState(_ s: RtcClient.PeerState) {

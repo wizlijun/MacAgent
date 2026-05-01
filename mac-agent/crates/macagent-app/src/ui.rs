@@ -670,35 +670,40 @@ impl eframe::App for MacAgentApp {
                         let msg_tx = self.glue_msg_tx.clone();
 
                         self.runtime.spawn(async move {
-                            use macagent_core::rtc_peer::{IceServer, RtcPeer};
-                            // We construct a minimal RtcPeer here just to pass to
-                            // SupervisionRouter.  run_glue will create its own peer for
-                            // signaling; the video track is added via that peer inside
-                            // supervision_router when the first supervise arrives.
-                            // To avoid double-peer awkwardness we pass the GlueConfig's
-                            // peer through a shared Arc created before run_glue.
-                            //
-                            // M5 approach: create one shared RtcPeer, pass Arc to both
-                            // SupervisionRouter and GlueConfig (run_glue accepts peer via
-                            // GlueConfig in a future refactor; for now we embed the peer
-                            // inside SupervisionRouter and let run_glue create its own.
-                            // The video track added by supervision_router will be on a
-                            // peer that is NOT the signaling peer — this is a known M5
-                            // limitation; full integration is M6 work).
-                            //
-                            // For M5 we wire supervision_router → ctrl_send_tx only
-                            // (outbound path).  The video track peer is created lazily.
-                            let dummy_ice: Vec<IceServer> = vec![];
-                            let rtc_peer = match RtcPeer::new(dummy_ice).await {
+                            use macagent_core::rtc_peer::RtcPeer;
+                            let ice = match crate::rtc_glue::fetch_turn_cred_for(
+                                &worker_url,
+                                &pair_id,
+                                &mac_device_secret_b64,
+                            )
+                            .await
+                            {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    eprintln!("[ui] fetch_turn_cred error: {e}");
+                                    return;
+                                }
+                            };
+                            let rtc_peer = match RtcPeer::new(ice).await {
                                 Ok(p) => Arc::new(p),
                                 Err(e) => {
                                     eprintln!("[ui] RtcPeer init error: {e}");
                                     return;
                                 }
                             };
+                            // Add H.264 track up front so the first offer SDP
+                            // includes m=video; SupervisionRouter reuses this handle.
+                            let video_track = match rtc_peer.add_local_h264_video_track().await {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    eprintln!("[ui] add_local_h264_video_track error: {e}");
+                                    return;
+                                }
+                            };
                             let supervision_router = Arc::new(SupervisionRouter::new(
                                 gui_capture,
                                 Arc::clone(&rtc_peer),
+                                video_track,
                                 ctrl_send_tx,
                             ));
                             let cfg = GlueConfig {
@@ -710,6 +715,7 @@ impl eframe::App for MacAgentApp {
                                 ctrl_recv_tx: Some(ctrl_recv_tx),
                                 ctrl_send_rx: Some(ctrl_send_rx),
                                 supervision_router: Some(supervision_router),
+                                peer: Some(rtc_peer),
                             };
                             if let Err(e) = run_glue(cfg, state_tx, msg_tx).await {
                                 eprintln!("glue error: {e}");
