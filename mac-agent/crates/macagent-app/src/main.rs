@@ -2,6 +2,8 @@
 
 mod agent_socket;
 mod clipboard_bridge;
+#[allow(dead_code)]
+mod gui_capture;
 mod keychain;
 mod launcher;
 mod notify;

@@ -36,6 +36,8 @@ uuid = { version = "1.10", features = ["v4"] }
 dirs = "5"
 shell-escape = "0.1"
 regex = "1"
+core-graphics = "0.24"
+core-foundation = "0.10"
 
 [profile.dev]
 opt-level = 0
