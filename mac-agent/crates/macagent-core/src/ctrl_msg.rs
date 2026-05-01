@@ -244,6 +244,88 @@ pub enum CtrlPayload {
         watcher_id: String,
         line_text: String,
     },
+
+    // M5: GUI supervision — iOS → Mac
+    ListWindows,
+    SuperviseExisting {
+        window_id: u32,
+        viewport: Viewport,
+    },
+    RemoveSupervised {
+        sup_id: String,
+    },
+    ViewportChanged {
+        sup_id: String,
+        viewport: Viewport,
+    },
+
+    // M5: GUI supervision — Mac → iOS
+    WindowsList {
+        windows: Vec<WindowInfo>,
+    },
+    SupervisedAck {
+        sup_id: String,
+        entry: SupervisionEntry,
+    },
+    SuperviseReject {
+        window_id: u32,
+        code: String,
+        reason: String,
+    },
+    SupervisionList {
+        entries: Vec<SupervisionEntry>,
+    },
+    StreamEnded {
+        sup_id: String,
+        reason: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// GUI supervision types (M5)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowInfo {
+    pub window_id: u32,
+    pub app_name: String,
+    pub bundle_id: Option<String>,
+    pub title: String,
+    pub width: u32,
+    pub height: u32,
+    pub on_screen: bool,
+    pub is_minimized: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SupervisionEntry {
+    pub sup_id: String,
+    pub window_id: u32,
+    pub app_name: String,
+    pub title: String,
+    pub status: SupervisionStatus,
+    pub source: SupervisionSource,
+    pub started_ts: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SupervisionStatus {
+    Active,
+    Dead,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SupervisionSource {
+    Existing,
+    Launched,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Viewport {
+    pub width: u32,
+    pub height: u32,
 }
 
 // ---------------------------------------------------------------------------

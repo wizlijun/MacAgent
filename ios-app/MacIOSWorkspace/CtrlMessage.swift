@@ -167,6 +167,111 @@ enum SessionSource: Codable, Equatable {
 }
 
 // ---------------------------------------------------------------------------
+// GUI supervision types (M5)
+// ---------------------------------------------------------------------------
+
+struct WindowInfo: Codable, Equatable {
+    let windowId: UInt32
+    let appName: String
+    let bundleId: String?
+    let title: String
+    let width: UInt32
+    let height: UInt32
+    let onScreen: Bool
+    let isMinimized: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case windowId = "window_id"
+        case appName = "app_name"
+        case bundleId = "bundle_id"
+        case title, width, height
+        case onScreen = "on_screen"
+        case isMinimized = "is_minimized"
+    }
+}
+
+struct SupervisionEntry: Codable, Equatable {
+    let supId: String
+    let windowId: UInt32
+    let appName: String
+    let title: String
+    let status: SupervisionStatus
+    let source: SupervisionSource
+    let startedTs: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case supId = "sup_id"
+        case windowId = "window_id"
+        case appName = "app_name"
+        case title, status, source
+        case startedTs = "started_ts"
+    }
+}
+
+enum SupervisionStatus: Codable, Equatable {
+    case active
+    case dead
+
+    private enum CodingKeys: String, CodingKey { case kind }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try c.decode(String.self, forKey: .kind)
+        switch kind {
+        case "active": self = .active
+        case "dead": self = .dead
+        default:
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "unknown SupervisionStatus kind \(kind)"
+            ))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .active: try c.encode("active", forKey: .kind)
+        case .dead: try c.encode("dead", forKey: .kind)
+        }
+    }
+}
+
+enum SupervisionSource: Codable, Equatable {
+    case existing
+    case launched
+
+    private enum CodingKeys: String, CodingKey { case kind }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try c.decode(String.self, forKey: .kind)
+        switch kind {
+        case "existing": self = .existing
+        case "launched": self = .launched
+        default:
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "unknown SupervisionSource kind \(kind)"
+            ))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .existing: try c.encode("existing", forKey: .kind)
+        case .launched: try c.encode("launched", forKey: .kind)
+        }
+    }
+}
+
+struct Viewport: Codable, Equatable {
+    let width: UInt32
+    let height: UInt32
+}
+
+// ---------------------------------------------------------------------------
 // Clipboard types (M4)
 // ---------------------------------------------------------------------------
 
@@ -287,6 +392,19 @@ enum CtrlPayload: Codable, Equatable {
     case watchersList(sid: String, watchers: [WatcherInfo])
     case watcherMatched(sid: String, watcherId: String, lineText: String)
 
+    // M5: GUI supervision — iOS → Mac
+    case listWindows
+    case superviseExisting(windowId: UInt32, viewport: Viewport)
+    case removeSupervised(supId: String)
+    case viewportChanged(supId: String, viewport: Viewport)
+
+    // M5: GUI supervision — Mac → iOS
+    case windowsList(windows: [WindowInfo])
+    case supervisedAck(supId: String, entry: SupervisionEntry)
+    case superviseReject(windowId: UInt32, code: String, reason: String)
+    case supervisionList(entries: [SupervisionEntry])
+    case streamEnded(supId: String, reason: String)
+
     // MARK: - Coding keys
 
     private enum CodingKeys: String, CodingKey {
@@ -298,6 +416,7 @@ enum CtrlPayload: Codable, Equatable {
         case payload
         case source, content
         case watcher_id, regex, name, watchers, line_text
+        case window_id, viewport, sup_id, entry, windows, entries
     }
 
     // MARK: - canonical bytes
@@ -404,6 +523,45 @@ enum CtrlPayload: Codable, Equatable {
         case .watcherMatched(let sid, let watcherId, let lineText):
             return try CanonicalJSON.encode(["type": "watcher_matched", "sid": sid,
                                              "watcher_id": watcherId, "line_text": lineText])
+
+        case .listWindows:
+            return try CanonicalJSON.encode(["type": "list_windows"])
+        case .superviseExisting(let windowId, let viewport):
+            let encoder = JSONEncoder()
+            let vpData = try encoder.encode(viewport)
+            let vpObj = try JSONSerialization.jsonObject(with: vpData)
+            return try CanonicalJSON.encode(["type": "supervise_existing",
+                                             "window_id": windowId, "viewport": vpObj])
+        case .removeSupervised(let supId):
+            return try CanonicalJSON.encode(["type": "remove_supervised", "sup_id": supId])
+        case .viewportChanged(let supId, let viewport):
+            let encoder = JSONEncoder()
+            let vpData = try encoder.encode(viewport)
+            let vpObj = try JSONSerialization.jsonObject(with: vpData)
+            return try CanonicalJSON.encode(["type": "viewport_changed",
+                                             "sup_id": supId, "viewport": vpObj])
+        case .windowsList(let windows):
+            let encoder = JSONEncoder()
+            let windowsData = try encoder.encode(windows)
+            let windowsObj = try JSONSerialization.jsonObject(with: windowsData)
+            return try CanonicalJSON.encode(["type": "windows_list", "windows": windowsObj])
+        case .supervisedAck(let supId, let entry):
+            let encoder = JSONEncoder()
+            let entryData = try encoder.encode(entry)
+            let entryObj = try JSONSerialization.jsonObject(with: entryData)
+            return try CanonicalJSON.encode(["type": "supervised_ack",
+                                             "sup_id": supId, "entry": entryObj])
+        case .superviseReject(let windowId, let code, let reason):
+            return try CanonicalJSON.encode(["type": "supervise_reject",
+                                             "window_id": windowId, "code": code, "reason": reason])
+        case .supervisionList(let entries):
+            let encoder = JSONEncoder()
+            let entriesData = try encoder.encode(entries)
+            let entriesObj = try JSONSerialization.jsonObject(with: entriesData)
+            return try CanonicalJSON.encode(["type": "supervision_list", "entries": entriesObj])
+        case .streamEnded(let supId, let reason):
+            return try CanonicalJSON.encode(["type": "stream_ended",
+                                             "sup_id": supId, "reason": reason])
         }
     }
 
@@ -514,6 +672,39 @@ enum CtrlPayload: Codable, Equatable {
             try c.encode(sid, forKey: .sid)
             try c.encode(watcherId, forKey: .watcher_id)
             try c.encode(lineText, forKey: .line_text)
+
+        case .listWindows:
+            try c.encode("list_windows", forKey: .type)
+        case .superviseExisting(let windowId, let viewport):
+            try c.encode("supervise_existing", forKey: .type)
+            try c.encode(windowId, forKey: .window_id)
+            try c.encode(viewport, forKey: .viewport)
+        case .removeSupervised(let supId):
+            try c.encode("remove_supervised", forKey: .type)
+            try c.encode(supId, forKey: .sup_id)
+        case .viewportChanged(let supId, let viewport):
+            try c.encode("viewport_changed", forKey: .type)
+            try c.encode(supId, forKey: .sup_id)
+            try c.encode(viewport, forKey: .viewport)
+        case .windowsList(let windows):
+            try c.encode("windows_list", forKey: .type)
+            try c.encode(windows, forKey: .windows)
+        case .supervisedAck(let supId, let entry):
+            try c.encode("supervised_ack", forKey: .type)
+            try c.encode(supId, forKey: .sup_id)
+            try c.encode(entry, forKey: .entry)
+        case .superviseReject(let windowId, let code, let reason):
+            try c.encode("supervise_reject", forKey: .type)
+            try c.encode(windowId, forKey: .window_id)
+            try c.encode(code, forKey: .code)
+            try c.encode(reason, forKey: .reason)
+        case .supervisionList(let entries):
+            try c.encode("supervision_list", forKey: .type)
+            try c.encode(entries, forKey: .entries)
+        case .streamEnded(let supId, let reason):
+            try c.encode("stream_ended", forKey: .type)
+            try c.encode(supId, forKey: .sup_id)
+            try c.encode(reason, forKey: .reason)
         }
     }
 
@@ -644,6 +835,41 @@ enum CtrlPayload: Codable, Equatable {
                 sid: try c.decode(String.self, forKey: .sid),
                 watcherId: try c.decode(String.self, forKey: .watcher_id),
                 lineText: try c.decode(String.self, forKey: .line_text)
+            )
+
+        case "list_windows":
+            self = .listWindows
+        case "supervise_existing":
+            self = .superviseExisting(
+                windowId: try c.decode(UInt32.self, forKey: .window_id),
+                viewport: try c.decode(Viewport.self, forKey: .viewport)
+            )
+        case "remove_supervised":
+            self = .removeSupervised(supId: try c.decode(String.self, forKey: .sup_id))
+        case "viewport_changed":
+            self = .viewportChanged(
+                supId: try c.decode(String.self, forKey: .sup_id),
+                viewport: try c.decode(Viewport.self, forKey: .viewport)
+            )
+        case "windows_list":
+            self = .windowsList(windows: try c.decode([WindowInfo].self, forKey: .windows))
+        case "supervised_ack":
+            self = .supervisedAck(
+                supId: try c.decode(String.self, forKey: .sup_id),
+                entry: try c.decode(SupervisionEntry.self, forKey: .entry)
+            )
+        case "supervise_reject":
+            self = .superviseReject(
+                windowId: try c.decode(UInt32.self, forKey: .window_id),
+                code: try c.decode(String.self, forKey: .code),
+                reason: try c.decode(String.self, forKey: .reason)
+            )
+        case "supervision_list":
+            self = .supervisionList(entries: try c.decode([SupervisionEntry].self, forKey: .entries))
+        case "stream_ended":
+            self = .streamEnded(
+                supId: try c.decode(String.self, forKey: .sup_id),
+                reason: try c.decode(String.self, forKey: .reason)
             )
 
         default:
