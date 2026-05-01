@@ -63,7 +63,7 @@ struct PairedView: View {
                     }
 
                     if let ss = supervisionStore {
-                        NavigationLink(destination: WindowListView(store: ss)) {
+                        NavigationLink(destination: SupervisionGrid(store: ss)) {
                             Label("桌面", systemImage: "display")
                         }
                         .buttonStyle(.borderedProminent)
