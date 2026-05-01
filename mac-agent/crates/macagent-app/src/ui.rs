@@ -4,7 +4,7 @@
 //! Transitions are driven by results arriving from the reqwest task via mpsc.
 
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use egui::ColorImage;
@@ -17,6 +17,7 @@ use crate::gui_capture::{GuiCapture, VideoConfig};
 use crate::input_injector::InputInjector;
 use crate::launcher::LauncherConfig;
 use crate::notify_engine::NotifyEngine;
+use crate::onboarding;
 use crate::producer_registry::ProducerRegistry;
 use crate::push_client::PushClient;
 use crate::rtc_glue::{run_glue, GlueConfig, GlueState};
@@ -102,6 +103,8 @@ pub struct MacAgentApp {
     notify_engine_cell: std::sync::Arc<std::sync::RwLock<std::sync::Arc<NotifyEngine>>>,
     /// Shared slot populated by Connect spawn so `update()` can read AX status each frame.
     pub input_injector: Arc<Mutex<Option<Arc<InputInjector>>>>,
+    /// 1s-TTL cache for onboarding permission probes (eframe runs at 60fps).
+    perm_cache: Option<(Instant, onboarding::PermissionStatus, onboarding::PermissionStatus)>,
 }
 
 impl MacAgentApp {
@@ -231,6 +234,7 @@ impl MacAgentApp {
             _router: router,
             notify_engine_cell,
             input_injector: Arc::new(Mutex::new(None)),
+            perm_cache: None,
         })
     }
 
@@ -420,6 +424,23 @@ impl MacAgentApp {
             pixels,
         };
         Some(ctx.load_texture("pair_qr", color_image, egui::TextureOptions::LINEAR))
+    }
+
+    /// Return cached (screen_recording, accessibility) statuses with 1s TTL.
+    fn permission_statuses(
+        &mut self,
+    ) -> (onboarding::PermissionStatus, onboarding::PermissionStatus) {
+        const TTL: Duration = Duration::from_secs(1);
+        let now = Instant::now();
+        if let Some((at, sr, ax)) = self.perm_cache {
+            if now.duration_since(at) < TTL {
+                return (sr, ax);
+            }
+        }
+        let sr = onboarding::screen_recording_status();
+        let ax = onboarding::accessibility_status();
+        self.perm_cache = Some((now, sr, ax));
+        (sr, ax)
     }
 
     /// Render the current state. Returns Some(next_state) if a transition is needed.
@@ -638,25 +659,40 @@ impl eframe::App for MacAgentApp {
         while self.glue_msg_rx.try_recv().is_ok() {}
 
         let glue_state = self.glue_state;
-        let injector = self.input_injector.lock().unwrap().clone();
-        let ax_granted = injector.as_ref().map(|i| i.check_ax());
+        let perm_statuses = if matches!(self.state, PairState::Paired { .. }) {
+            Some(self.permission_statuses())
+        } else {
+            None
+        };
         let transition = egui::CentralPanel::default()
             .show(ctx, |ui| {
                 ui.heading(format!("macagent v{}", macagent_core::version()));
                 ui.separator();
-                if matches!(self.state, PairState::Paired { .. }) && ax_granted == Some(false) {
-                    ui.horizontal(|ui| {
-                        ui.colored_label(
-                            egui::Color32::YELLOW,
-                            "⚠️ Accessibility 未授权 — 输入注入不可用",
-                        );
-                        if ui.button("Open System Settings").clicked() {
-                            let _ = std::process::Command::new("open")
-                                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-                                .spawn();
-                        }
-                    });
-                    ui.separator();
+                if let Some((sr, ax)) = perm_statuses {
+                    if sr != onboarding::PermissionStatus::Granted {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(
+                                egui::Color32::YELLOW,
+                                "⚠️ 屏幕录制 — GUI 监管需要",
+                            );
+                            if ui.button("打开系统设置").clicked() {
+                                onboarding::open_screen_recording_settings();
+                            }
+                        });
+                        ui.separator();
+                    }
+                    if ax != onboarding::PermissionStatus::Granted {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(
+                                egui::Color32::YELLOW,
+                                "⚠️ 辅助功能 — 输入注入需要",
+                            );
+                            if ui.button("打开系统设置").clicked() {
+                                onboarding::open_accessibility_settings();
+                            }
+                        });
+                        ui.separator();
+                    }
                 }
                 Self::render_state(&self.state, &self.last_error, glue_state, ui)
             })

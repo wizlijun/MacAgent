@@ -11,6 +11,7 @@ mod launcher;
 mod launcher_m7;
 mod notify;
 mod notify_engine;
+mod onboarding;
 mod pair_qr;
 mod producer_registry;
 mod push_client;
