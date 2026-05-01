@@ -88,7 +88,7 @@ impl SCStreamDelegateTrait for StreamDelegate {
 }
 
 struct ActiveStream {
-    sc_stream: SCStream,
+    sc_stream: Option<SCStream>,
     stop_flag: Arc<AtomicBool>,
     encoder_thread: Option<JoinHandle<()>>,
     tokio_task: tokio::task::JoinHandle<()>,
@@ -97,7 +97,10 @@ struct ActiveStream {
 impl ActiveStream {
     fn stop(mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
-        let _ = self.sc_stream.stop_capture();
+        if let Some(s) = self.sc_stream.take() {
+            let _ = s.stop_capture();
+            drop(s);
+        }
         if let Some(h) = self.encoder_thread.take() {
             let _ = h.join();
         }
@@ -226,7 +229,7 @@ impl StreamManager {
             .map_err(|e| anyhow!("SCStream::start_capture: {:?}", e))?;
 
         let active = ActiveStream {
-            sc_stream,
+            sc_stream: Some(sc_stream),
             stop_flag,
             encoder_thread: Some(encoder_thread),
             tokio_task,

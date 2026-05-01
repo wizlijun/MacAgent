@@ -33,7 +33,6 @@ const PTS_TIMESCALE: i32 = 1_000_000;
 /// One encoded H.264 sample (Annex-B), ready for `VideoTrackHandle::push_sample`.
 pub struct EncodedSample {
     pub data: Bytes,
-    pub is_keyframe: bool,
     pub duration: Duration,
 }
 
@@ -217,7 +216,6 @@ fn build_encoded_sample(sample: &CMSampleBuffer, frame_dur: Duration) -> Result<
     };
     Ok(Some(EncodedSample {
         data,
-        is_keyframe,
         duration: frame_dur,
     }))
 }
