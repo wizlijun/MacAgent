@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- webrtc-rs links libwebrtc-style code paths that allocate writable+executable
+         pages for SCTP/DTLS scratch buffers; without allow-jit notarization passes
+         but the binary SIGKILLs at runtime with a hardened-runtime violation. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!-- Same root cause: webrtc-rs / ring crate writes to RW pages then executes.
+         Notarization rejects the binary at submit time without this entitlement. -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- ScreenCaptureKit + VideoToolbox dynamically load private system frameworks
+         under /System/Library/PrivateFrameworks. Library validation blocks them
+         under hardened runtime; disabling validation is the documented workaround. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>
