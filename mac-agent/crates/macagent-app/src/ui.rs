@@ -13,12 +13,14 @@ use tokio::sync::mpsc as async_mpsc;
 
 use crate::agent_socket::AgentSocket;
 use crate::clipboard_bridge::ClipboardBridge;
+use crate::gui_capture::{GuiCapture, VideoConfig};
 use crate::launcher::LauncherConfig;
 use crate::notify_engine::NotifyEngine;
 use crate::producer_registry::ProducerRegistry;
 use crate::push_client::PushClient;
 use crate::rtc_glue::{run_glue, GlueConfig, GlueState};
 use crate::session_router::{run_socket_event_loop, SessionRouter};
+use crate::supervision_router::SupervisionRouter;
 use crate::{keychain, pair_qr};
 
 // ── Keychain keys ───────────────────────────────────────────────────────────
@@ -653,18 +655,62 @@ impl eframe::App for MacAgentApp {
                 }
                 StateTransition::Connect => {
                     if let PairState::Paired { record } = &self.state {
-                        let cfg = GlueConfig {
-                            worker_url: record.worker_url.clone(),
-                            pair_id: record.pair_id.clone(),
-                            mac_device_secret_b64: record.mac_device_secret_b64.clone(),
-                            local_keys: Arc::clone(&self.local_keys),
-                            peer_pubkey_b64: record.peer_pubkey_b64.clone(),
-                            ctrl_recv_tx: Some(self.ctrl_recv_tx.clone()),
-                            ctrl_send_rx: Some(Arc::clone(&self.ctrl_send_rx)),
-                        };
+                        let gui_capture = Arc::new(GuiCapture::new(VideoConfig::default()));
+                        let ctrl_send_tx = self.ctrl_send_tx.clone();
+
+                        // Build RtcPeer inside the async block; supervision_router needs it.
+                        let worker_url = record.worker_url.clone();
+                        let pair_id = record.pair_id.clone();
+                        let mac_device_secret_b64 = record.mac_device_secret_b64.clone();
+                        let local_keys = Arc::clone(&self.local_keys);
+                        let peer_pubkey_b64 = record.peer_pubkey_b64.clone();
+                        let ctrl_recv_tx = self.ctrl_recv_tx.clone();
+                        let ctrl_send_rx = Arc::clone(&self.ctrl_send_rx);
                         let state_tx = self.glue_state_tx.clone();
                         let msg_tx = self.glue_msg_tx.clone();
+
                         self.runtime.spawn(async move {
+                            use macagent_core::rtc_peer::{IceServer, RtcPeer};
+                            // We construct a minimal RtcPeer here just to pass to
+                            // SupervisionRouter.  run_glue will create its own peer for
+                            // signaling; the video track is added via that peer inside
+                            // supervision_router when the first supervise arrives.
+                            // To avoid double-peer awkwardness we pass the GlueConfig's
+                            // peer through a shared Arc created before run_glue.
+                            //
+                            // M5 approach: create one shared RtcPeer, pass Arc to both
+                            // SupervisionRouter and GlueConfig (run_glue accepts peer via
+                            // GlueConfig in a future refactor; for now we embed the peer
+                            // inside SupervisionRouter and let run_glue create its own.
+                            // The video track added by supervision_router will be on a
+                            // peer that is NOT the signaling peer — this is a known M5
+                            // limitation; full integration is M6 work).
+                            //
+                            // For M5 we wire supervision_router → ctrl_send_tx only
+                            // (outbound path).  The video track peer is created lazily.
+                            let dummy_ice: Vec<IceServer> = vec![];
+                            let rtc_peer = match RtcPeer::new(dummy_ice).await {
+                                Ok(p) => Arc::new(p),
+                                Err(e) => {
+                                    eprintln!("[ui] RtcPeer init error: {e}");
+                                    return;
+                                }
+                            };
+                            let supervision_router = Arc::new(SupervisionRouter::new(
+                                gui_capture,
+                                Arc::clone(&rtc_peer),
+                                ctrl_send_tx,
+                            ));
+                            let cfg = GlueConfig {
+                                worker_url,
+                                pair_id,
+                                mac_device_secret_b64,
+                                local_keys,
+                                peer_pubkey_b64,
+                                ctrl_recv_tx: Some(ctrl_recv_tx),
+                                ctrl_send_rx: Some(ctrl_send_rx),
+                                supervision_router: Some(supervision_router),
+                            };
                             if let Err(e) = run_glue(cfg, state_tx, msg_tx).await {
                                 eprintln!("glue error: {e}");
                             }

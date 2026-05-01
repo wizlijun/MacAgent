@@ -48,6 +48,7 @@ pub enum PeerState {
 }
 
 /// Handle to a locally added H.264 video track. Use `push_sample` to feed encoded frames.
+#[derive(Clone)]
 pub struct VideoTrackHandle {
     track: Arc<TrackLocalStaticSample>,
 }

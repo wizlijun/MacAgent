@@ -26,6 +26,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, Mutex};
 
+use crate::supervision_router::SupervisionRouter;
+
 // ── Public types ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy)]
@@ -49,6 +51,8 @@ pub struct GlueConfig {
     /// Outbound ctrl payloads to sign+send to iOS.  SessionRouter pushes here.
     pub ctrl_send_rx:
         Option<std::sync::Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<CtrlPayload>>>>,
+    /// supervision_router receives the same decoded payloads as ctrl_recv_tx.
+    pub supervision_router: Option<Arc<SupervisionRouter>>,
 }
 
 // ── Wire frame ───────────────────────────────────────────────────────────────
@@ -133,6 +137,7 @@ pub async fn run_glue(
     // Extract session-router channels from config before moving cfg.
     let ctrl_recv_tx = cfg.ctrl_recv_tx.clone();
     let ctrl_send_rx = cfg.ctrl_send_rx.clone();
+    let supervision_router = cfg.supervision_router.clone();
     let _ = state_tx.send(GlueState::FetchingTurn);
     let ice = fetch_turn_cred(&cfg).await?;
 
@@ -153,11 +158,12 @@ pub async fn run_glue(
     let (ack_tx, ack_rx) = mpsc::unbounded_channel::<()>();
     let (miss_tx, mut miss_rx) = mpsc::unbounded_channel::<()>();
 
-    // ctrl channel → ctrl_msg_tx + handle hb/hb_ack + dispatch to session_router
+    // ctrl channel → ctrl_msg_tx + handle hb/hb_ack + dispatch to session_router + supervision_router
     let cmsg_tx = ctrl_msg_tx.clone();
     let ctrl_for_cb = Arc::clone(&ctrl);
     let ss_for_cb = shared_secret;
     let router_recv_tx = ctrl_recv_tx.clone();
+    let sup_router = supervision_router.clone();
     ctrl.on_message(move |m| {
         // Try to parse as SignedCtrl and handle heartbeat variants
         if let Ok(signed) = serde_json::from_str::<macagent_core::ctrl_msg::SignedCtrl>(&m) {
@@ -194,6 +200,16 @@ pub async fn run_glue(
                         // Forward to session_router if wired
                         if let Some(ref tx) = router_recv_tx {
                             let _ = tx.send(signed.payload.clone());
+                        }
+                        // Forward to supervision_router if wired
+                        if let Some(ref sr) = sup_router {
+                            let sr = Arc::clone(sr);
+                            let payload = signed.payload.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = sr.handle_ctrl(payload).await {
+                                    eprintln!("[glue] supervision_router error: {e}");
+                                }
+                            });
                         }
                     }
                 }

@@ -14,6 +14,7 @@ mod push_client;
 mod rtc_glue;
 mod run;
 mod session_router;
+mod supervision_router;
 mod ui;
 
 use clap::{Parser, Subcommand};
