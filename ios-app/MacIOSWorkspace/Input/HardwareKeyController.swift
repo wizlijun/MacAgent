@@ -5,7 +5,6 @@ import UIKit
 
 final class HardwareKeyController: UIViewController {
     weak var inputClient: InputClient?
-    private var modState: ModifierState?
 
     override var canBecomeFirstResponder: Bool { true }
 

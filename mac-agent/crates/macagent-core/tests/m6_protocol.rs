@@ -21,11 +21,11 @@ fn gui_input_keycombo_signature_canonical() {
         },
     };
     let bytes = canonical_bytes(&payload);
-    // Stable shape: nested Vec/Map sorted recursively
     let s = std::str::from_utf8(&bytes).unwrap();
-    assert!(s.contains("\"modifiers\""));
-    assert!(s.contains("\"cmd\""));
-    assert!(s.contains("\"shift\""));
+    assert!(s.find("\"payload\"").unwrap() < s.find("\"sup_id\"").unwrap());
+    assert!(s.find("\"sup_id\"").unwrap() < s.find("\"type\"").unwrap());
+    assert!(s.find("\"key\"").unwrap() < s.find("\"kind\"").unwrap());
+    assert!(s.find("\"kind\"").unwrap() < s.find("\"modifiers\"").unwrap());
 }
 
 #[test]

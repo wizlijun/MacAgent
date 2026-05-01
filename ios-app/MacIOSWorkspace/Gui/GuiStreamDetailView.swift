@@ -7,7 +7,7 @@ struct GuiStreamDetailView: View {
     @StateObject private var inputClient: InputClient
     @StateObject private var modState = ModifierState()
     @StateObject private var hwKbd = HardwareKeyboardDetector()
-    @State private var lastDragLocation: CGPoint = .zero
+    @State private var lastDragLocation: CGPoint? = nil
     @State private var contentSize: CGSize = .zero
     @State private var showRetryBanner = false
 
@@ -69,12 +69,15 @@ struct GuiStreamDetailView: View {
     private var panGesture: some Gesture {
         DragGesture(minimumDistance: 8)
             .onChanged { value in
-                let dx = value.location.x - lastDragLocation.x
-                let dy = value.location.y - lastDragLocation.y
-                lastDragLocation = value.location
-                Task { await inputClient.scroll(dx: dx, dy: dy) }
+                defer { lastDragLocation = value.location }
+                guard let last = lastDragLocation else { return }
+                let dx = value.location.x - last.x
+                let dy = value.location.y - last.y
+                if dx != 0 || dy != 0 {
+                    Task { await inputClient.scroll(dx: dx, dy: dy) }
+                }
             }
-            .onEnded { _ in lastDragLocation = .zero }
+            .onEnded { _ in lastDragLocation = nil }
     }
 
     private var permissionBanner: some View {
