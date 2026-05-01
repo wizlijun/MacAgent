@@ -9,6 +9,7 @@
 
 pub mod perm;
 
+mod annexb;
 mod encoder;
 mod stream;
 mod windows;
