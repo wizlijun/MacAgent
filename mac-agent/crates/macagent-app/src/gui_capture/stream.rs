@@ -1,44 +1,29 @@
 //! Active supervision stream management.
 //!
-//! STUB: M5.2 — runs dummy encoder per supervised window.
-//! Real ScreenCaptureKit SCStream integration is deferred to M5.2.5.
+//! STUB (M5.2.5.3 transitional): the previous dummy-byte encoder was removed in
+//! favor of the real `H264Encoder`. The full SCStream wiring is M5.2.5.4; until
+//! then `start` is a no-op placeholder that simply tracks supervised ids.
 
-use crate::gui_capture::encoder::{self, EncoderTask};
 use macagent_core::rtc_peer::VideoTrackHandle;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 pub struct StreamManager {
-    /// sup_id -> running encoder task.
-    tasks: Mutex<HashMap<String, EncoderTask>>,
+    active: Mutex<HashSet<String>>,
 }
 
 impl StreamManager {
     pub fn new() -> Self {
         Self {
-            tasks: Mutex::new(HashMap::new()),
+            active: Mutex::new(HashSet::new()),
         }
     }
 
-    /// Start a stub stream for `sup_id` feeding `track`.
-    /// If a stream for the same `sup_id` already exists it is stopped first.
-    pub fn start(&self, sup_id: String, track: Arc<VideoTrackHandle>) {
-        let task = encoder::start_stub(track);
-        let mut guard = self.tasks.lock().unwrap();
-        if let Some(old) = guard.remove(&sup_id) {
-            old.stop();
-        }
-        guard.insert(sup_id, task);
+    pub fn start(&self, sup_id: String, _track: Arc<VideoTrackHandle>) {
+        self.active.lock().unwrap().insert(sup_id);
     }
 
-    /// Stop and remove the stream for `sup_id`. Returns true if found.
     pub fn stop(&self, sup_id: &str) -> bool {
-        let mut guard = self.tasks.lock().unwrap();
-        if let Some(task) = guard.remove(sup_id) {
-            task.stop();
-            true
-        } else {
-            false
-        }
+        self.active.lock().unwrap().remove(sup_id)
     }
 }
