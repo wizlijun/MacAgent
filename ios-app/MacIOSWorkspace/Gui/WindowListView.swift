@@ -58,7 +58,7 @@ struct WindowListView: View {
         .alert(item: rejectBinding()) { reject in
             Alert(
                 title: Text("监管失败"),
-                message: Text("\(reject.code): \(reject.reason)"),
+                message: Text(ErrorMessage.describe(code: reject.code, message: reject.reason)),
                 dismissButton: .default(Text("OK")) { store.clearReject() }
             )
         }

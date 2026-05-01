@@ -54,7 +54,7 @@ struct SessionListView: View {
         } message: {
             if let rid = rejectedReqId, let p = store.pendingLaunches[rid],
                case .rejected(let code, let reason) = p.status {
-                Text("\(code): \(reason)")
+                Text(ErrorMessage.describe(code: code, message: reason))
             }
         }
     }

@@ -111,7 +111,7 @@ struct GuiStreamDetailView: View {
         VStack {
             HStack {
                 Image(systemName: "exclamationmark.triangle.fill")
-                Text("Mac 未授予 Accessibility 权限")
+                Text(ErrorMessage.humanize("permission_denied"))
                 Spacer()
                 Button("再试一次") { showRetryBanner = false }
             }
