@@ -190,6 +190,24 @@ pub async fn run_glue(
                             ij.handle_input(sup_id, payload).await;
                         }
                     }
+                    CtrlPayload::SuperviseLaunch {
+                        bundle_id,
+                        viewport,
+                    } => {
+                        if let Err(e) = sr.handle_supervise_launch(bundle_id, viewport).await {
+                            eprintln!("[rtc_glue] supervise_launch error: {e}");
+                        }
+                    }
+                    CtrlPayload::SwitchActive { sup_id, viewport } => {
+                        if let Err(e) = sr.handle_switch_active(sup_id, viewport).await {
+                            eprintln!("[rtc_glue] switch_active error: {e}");
+                        }
+                    }
+                    CtrlPayload::ViewportChanged { sup_id, viewport } => {
+                        if let Err(e) = sr.handle_viewport_changed(sup_id, viewport).await {
+                            eprintln!("[rtc_glue] viewport_changed error: {e}");
+                        }
+                    }
                     other => {
                         if let Err(e) = sr.handle_ctrl(other).await {
                             eprintln!("[glue] supervision_router error: {e}");

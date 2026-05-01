@@ -88,9 +88,6 @@ impl SupervisionRouter {
             CtrlPayload::RemoveSupervised { sup_id } => {
                 self.handle_remove_supervised(sup_id).await?;
             }
-            CtrlPayload::ViewportChanged { sup_id, viewport } => {
-                self.handle_viewport_changed(sup_id, viewport).await?;
-            }
             _ => {}
         }
         Ok(())
@@ -166,7 +163,6 @@ impl SupervisionRouter {
     }
 
     /// Launch a whitelisted Mac app, register its window, and make it active.
-    #[allow(dead_code)] // wired by rtc_glue in M7.8
     pub async fn handle_supervise_launch(
         &self,
         bundle_id: String,
@@ -242,7 +238,6 @@ impl SupervisionRouter {
     }
 
     /// Switch the active stream to an already-armed supervision.
-    #[allow(dead_code)] // wired by rtc_glue in M7.8
     pub async fn handle_switch_active(&self, sup_id: String, viewport: Viewport) -> Result<()> {
         // Existence check under lock
         {
