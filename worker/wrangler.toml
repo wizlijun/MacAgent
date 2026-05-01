@@ -3,6 +3,13 @@ main = "src/index.ts"
 compatibility_date = "2025-09-01"
 compatibility_flags = ["nodejs_compat"]
 
+# `wrangler dev` 默认绑 127.0.0.1，改成 0.0.0.0 让真机/局域网设备可访问。
+# KV / DO 持久化用 CLI 参数：`wrangler dev --persist-to ./.miniflare-state`
+[dev]
+ip = "0.0.0.0"
+port = 8787
+
+
 # Durable Object 占位（M1 启用 SignalingRoom）
 [[durable_objects.bindings]]
 name = "SIGNALING_ROOM"
@@ -19,3 +26,5 @@ new_sqlite_classes = ["SignalingRoom"]
 [[kv_namespaces]]
 binding = "PAIRS"
 id = "bc7804a6c3fa4dd1adc3c6467322aa9b"
+# preview_id 仅 `wrangler dev` 用，由 miniflare 本地模拟，可与 prod id 不同
+preview_id = "bc7804a6c3fa4dd1adc3c6467322aa9b-preview"
