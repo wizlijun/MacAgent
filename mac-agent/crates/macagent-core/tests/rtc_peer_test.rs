@@ -77,3 +77,59 @@ async fn loopback_two_peers_exchange_sdp_ice_and_ctrl_message() {
     alice_arc.close().await.unwrap();
     bob_arc.close().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn add_video_track_includes_m_video_in_sdp() {
+    let alice = RtcPeer::new(vec![]).await.unwrap();
+    let _video = alice.add_local_h264_video_track().await.unwrap();
+    let _ctrl = alice.open_ctrl_channel().await.unwrap();
+
+    let offer = alice.create_offer().await.unwrap();
+    assert!(
+        offer.contains("m=video"),
+        "offer should contain video m-section, got:\n{offer}"
+    );
+    assert!(
+        offer.contains("H264"),
+        "offer should mention H264, got:\n{offer}"
+    );
+
+    alice.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn loopback_video_negotiation() {
+    let alice = RtcPeer::new(vec![]).await.unwrap();
+    let bob = RtcPeer::new(vec![]).await.unwrap();
+
+    let _video = alice.add_local_h264_video_track().await.unwrap();
+    let _ctrl = alice.open_ctrl_channel().await.unwrap();
+
+    let offer = alice.create_offer().await.unwrap();
+    bob.apply_remote_offer(&offer).await.unwrap();
+    let answer = bob.create_answer().await.unwrap();
+    alice.apply_remote_answer(&answer).await.unwrap();
+
+    // 验证 answer 也含 video（bob 接受了 alice 的 video offer）
+    assert!(
+        answer.contains("m=video") || answer.contains("video"),
+        "answer should accept video, got:\n{answer}"
+    );
+
+    alice.close().await.unwrap();
+    bob.close().await.unwrap();
+}
+
+// push_sample 单测：构造完成 video track 后立刻 push 一个 dummy NALU 不报错（不需要 connected 状态，
+// TrackLocalStaticSample::write_sample 即使在未 connect 时也可以接受样本）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_sample_does_not_error_before_connection() {
+    let alice = RtcPeer::new(vec![]).await.unwrap();
+    let video = alice.add_local_h264_video_track().await.unwrap();
+    let dummy_nalu = bytes::Bytes::from_static(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1f]);
+    video
+        .push_sample(dummy_nalu, std::time::Duration::from_millis(33))
+        .await
+        .ok();
+    alice.close().await.unwrap();
+}
