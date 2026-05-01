@@ -17,6 +17,8 @@ mod run;
 mod session_router;
 mod supervision_router;
 mod ui;
+#[allow(dead_code)]
+mod window_fitter;
 
 use clap::{Parser, Subcommand};
 
