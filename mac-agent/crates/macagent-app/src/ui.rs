@@ -95,6 +95,8 @@ pub struct MacAgentApp {
     >,
     /// Shared router (kept alive as long as the app runs).
     _router: std::sync::Arc<SessionRouter>,
+    /// Swappable notify engine wrapper; shared with SessionRouter and AgentSocket.
+    notify_engine_cell: std::sync::Arc<std::sync::RwLock<std::sync::Arc<NotifyEngine>>>,
 }
 
 impl MacAgentApp {
@@ -146,37 +148,32 @@ impl MacAgentApp {
             });
         }
 
-        // PushClient + NotifyEngine (created now from persisted pair record if available).
-        let push_client: Option<std::sync::Arc<PushClient>> =
+        // Build initial NotifyEngine. If already paired, wire up PushClient now.
+        // The cell allows rebuild_notify_engine() to swap in a new engine after
+        // first-time pairing without restarting the menu bar.
+        let initial_engine = Self::build_notify_engine(
             if let PairState::Paired { ref record } = state {
-                match PushClient::new(
-                    record.worker_url.clone(),
-                    record.pair_id.clone(),
-                    &record.mac_device_secret_b64,
-                ) {
-                    Ok(pc) => Some(std::sync::Arc::new(pc)),
-                    Err(e) => {
-                        eprintln!("[ui] PushClient init failed (push disabled): {e}");
-                        None
-                    }
-                }
+                Some(record)
             } else {
                 None
-            };
-        let notify_engine = NotifyEngine::new(push_client, ctrl_send_tx.clone());
+            },
+            ctrl_send_tx.clone(),
+        );
+        let notify_engine_cell = std::sync::Arc::new(std::sync::RwLock::new(initial_engine));
 
         let router = std::sync::Arc::new(SessionRouter::new(
             std::sync::Arc::clone(&registry),
             ctrl_send_tx.clone(),
             std::sync::Arc::clone(&launcher_config),
             clipboard_bridge,
-            std::sync::Arc::clone(&notify_engine),
+            std::sync::Arc::clone(&notify_engine_cell),
         ));
 
         // Start AgentSocket and wire socket events → router
         let router_for_socket = std::sync::Arc::clone(&router);
+        let ne_cell_for_socket = std::sync::Arc::clone(&notify_engine_cell);
         runtime.spawn(async move {
-            match AgentSocket::start(registry, notify_engine).await {
+            match AgentSocket::start(registry, ne_cell_for_socket).await {
                 Ok(socket) => {
                     run_socket_event_loop(socket.events_rx, router_for_socket).await;
                 }
@@ -227,7 +224,37 @@ impl MacAgentApp {
             ctrl_recv_tx,
             ctrl_recv_rx: ctrl_recv_rx_arc,
             _router: router,
+            notify_engine_cell,
         })
+    }
+
+    /// Construct a NotifyEngine, optionally wiring in a PushClient from a pair record.
+    fn build_notify_engine(
+        record: Option<&PairRecord>,
+        ctrl_tx: async_mpsc::UnboundedSender<macagent_core::ctrl_msg::CtrlPayload>,
+    ) -> std::sync::Arc<NotifyEngine> {
+        let push_client = record.and_then(|r| {
+            match PushClient::new(
+                r.worker_url.clone(),
+                r.pair_id.clone(),
+                &r.mac_device_secret_b64,
+            ) {
+                Ok(pc) => Some(std::sync::Arc::new(pc)),
+                Err(e) => {
+                    eprintln!("[ui] PushClient init failed (push disabled): {e}");
+                    None
+                }
+            }
+        });
+        NotifyEngine::new(push_client, ctrl_tx)
+    }
+
+    /// Rebuild NotifyEngine + PushClient for a paired record and swap it into the cell.
+    /// Called both at startup (when Keychain already has a record) and after first-time pairing.
+    fn rebuild_notify_engine(&self, record: &PairRecord) {
+        let engine = Self::build_notify_engine(Some(record), self.ctrl_send_tx.clone());
+        *self.notify_engine_cell.write().unwrap() = engine;
+        eprintln!("[ui] rebuilt NotifyEngine for pair_id={}", record.pair_id);
     }
 
     fn load_pair_record() -> Result<Option<PairRecord>> {
@@ -333,6 +360,8 @@ impl MacAgentApp {
                     match self.complete_pairing(pair_id, peer_pubkey_b64, mac_device_secret_b64) {
                         Ok(record) => {
                             self.last_error = None;
+                            // Rebuild NotifyEngine so push works immediately without restart.
+                            self.rebuild_notify_engine(&record);
                             self.state = PairState::Paired { record };
                         }
                         Err(e) => {

@@ -53,7 +53,8 @@ pub struct SessionRouter {
     ctrl_tx: mpsc::UnboundedSender<CtrlPayload>,
     launcher_config: Arc<LauncherConfig>,
     clipboard_bridge: Arc<ClipboardBridge>,
-    notify_engine: Arc<NotifyEngine>,
+    /// Swappable notify engine: rebuilt on PairState::Paired transition.
+    notify_engine: Arc<std::sync::RwLock<Arc<NotifyEngine>>>,
 }
 
 impl SessionRouter {
@@ -62,7 +63,7 @@ impl SessionRouter {
         ctrl_tx: mpsc::UnboundedSender<CtrlPayload>,
         launcher_config: Arc<LauncherConfig>,
         clipboard_bridge: Arc<ClipboardBridge>,
-        notify_engine: Arc<NotifyEngine>,
+        notify_engine: Arc<std::sync::RwLock<Arc<NotifyEngine>>>,
     ) -> Self {
         Self {
             registry,
@@ -134,13 +135,10 @@ impl SessionRouter {
                 regex,
                 name,
             } => {
-                match self
-                    .notify_engine
-                    .add_watcher(sid.clone(), watcher_id, regex, name)
-                    .await
-                {
+                let ne = Arc::clone(&*self.notify_engine.read().unwrap());
+                match ne.add_watcher(sid.clone(), watcher_id, regex, name).await {
                     Ok(()) => {
-                        let watchers = self.notify_engine.list_watchers(&sid).await;
+                        let watchers = ne.list_watchers(&sid).await;
                         self.send_ctrl(CtrlPayload::WatchersList { sid, watchers });
                     }
                     Err(e) => {
@@ -152,8 +150,9 @@ impl SessionRouter {
                 }
             }
             CtrlPayload::UnwatchSession { sid, watcher_id } => {
-                self.notify_engine.remove_watcher(&sid, &watcher_id).await;
-                let watchers = self.notify_engine.list_watchers(&sid).await;
+                let ne = Arc::clone(&*self.notify_engine.read().unwrap());
+                ne.remove_watcher(&sid, &watcher_id).await;
+                let watchers = ne.list_watchers(&sid).await;
                 self.send_ctrl(CtrlPayload::WatchersList { sid, watchers });
             }
             _ => {
@@ -293,7 +292,10 @@ impl SessionRouter {
         let ctrl_tx = self.ctrl_tx.clone();
         let registry = Arc::clone(&self.registry);
         let pending = Arc::clone(&self.pending);
-        let notify_engine = Arc::clone(&self.notify_engine);
+        // Snapshot the current engine at session-connect time; the engine is
+        // session-scoped (watchers are per-sid) so it does not need to be
+        // swapped mid-session.
+        let notify_engine = Arc::clone(&*self.notify_engine.read().unwrap());
         tokio::spawn(async move {
             while let Some(frame) = frames_rx.recv().await {
                 match frame {
@@ -498,8 +500,10 @@ mod tests {
         Arc::new(ClipboardBridge::new(tx))
     }
 
-    fn make_notify_engine(ctrl_tx: mpsc::UnboundedSender<CtrlPayload>) -> Arc<NotifyEngine> {
-        NotifyEngine::new(None, ctrl_tx)
+    fn make_notify_engine(
+        ctrl_tx: mpsc::UnboundedSender<CtrlPayload>,
+    ) -> Arc<std::sync::RwLock<Arc<NotifyEngine>>> {
+        Arc::new(std::sync::RwLock::new(NotifyEngine::new(None, ctrl_tx)))
     }
 
     #[tokio::test]

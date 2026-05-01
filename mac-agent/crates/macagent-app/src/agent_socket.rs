@@ -46,7 +46,7 @@ pub struct AgentSocket {
 impl AgentSocket {
     pub async fn start(
         registry: Arc<ProducerRegistry>,
-        notify_engine: Arc<NotifyEngine>,
+        notify_engine: Arc<std::sync::RwLock<Arc<NotifyEngine>>>,
     ) -> Result<Self> {
         let path = socket_path();
         // Remove stale socket file if present
@@ -65,7 +65,9 @@ impl AgentSocket {
                     Ok((stream, _addr)) => {
                         let reg = Arc::clone(&registry);
                         let ev_tx = events_tx.clone();
-                        let ne = Arc::clone(&notify_engine);
+                        // Read the current engine at connection time so a rebuilt engine
+                        // is picked up for each new notify connection.
+                        let ne = Arc::clone(&*notify_engine.read().unwrap());
                         tokio::spawn(handle_connection(stream, reg, ev_tx, ne));
                     }
                     Err(e) => {
