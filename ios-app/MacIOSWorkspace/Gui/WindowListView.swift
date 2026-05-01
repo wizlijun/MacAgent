@@ -78,23 +78,3 @@ private struct SuperviseRejectInfoIdentifiable: Identifiable {
     var code: String { info.code }
     var reason: String { info.reason }
 }
-
-struct GuiStreamDetailView: View {
-    @Bindable var store: SupervisionStore
-    let entry: SupervisionEntry
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            GuiStreamView(videoTrack: store.activeTrack)
-        }
-        .navigationTitle(entry.appName)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button(role: .destructive) {
-                    Task { await store.remove(supId: entry.supId) }
-                } label: { Image(systemName: "stop.circle") }
-            }
-        }
-    }
-}

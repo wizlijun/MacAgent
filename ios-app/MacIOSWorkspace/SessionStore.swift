@@ -156,6 +156,9 @@ final class SessionStore {
         case .supervisionList(let entries):
             supervisionStore?.handleSupervisionList(entries)
 
+        case .guiInputAck(let supId, let code, let msg):
+            supervisionStore?.handleGuiInputAck(supId: supId, code: code, message: msg)
+
         default:
             break
         }

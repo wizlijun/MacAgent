@@ -9,7 +9,8 @@ final class SupervisionStore {
     private(set) var entries: [SupervisionEntry] = []
     private(set) var activeTrack: RTCVideoTrack?
     var lastReject: SuperviseRejectInfo?
-    private weak var glue: RtcGlue?
+    var lastInputAck: InputAckRecord?
+    weak var glue: RtcGlue?
 
     init(glue: RtcGlue?) { self.glue = glue }
 
@@ -42,6 +43,10 @@ final class SupervisionStore {
 
     func handleSupervisionList(_ list: [SupervisionEntry]) { entries = list }
 
+    func handleGuiInputAck(supId: String, code: String, message: String?) {
+        lastInputAck = InputAckRecord(supId: supId, code: code, message: message)
+    }
+
     func refreshWindows() async {
         await glue?.sendCtrl(.listWindows)
     }
@@ -61,4 +66,10 @@ struct SuperviseRejectInfo: Equatable {
     let windowId: UInt32
     let code: String
     let reason: String
+}
+
+struct InputAckRecord: Equatable {
+    let supId: String
+    let code: String
+    let message: String?
 }

@@ -1,7 +1,8 @@
+import Combine
 import Foundation
 
 @MainActor
-final class InputClient {
+final class InputClient: ObservableObject {
     // Test seam — production passes RtcGlue.
     protocol Glue: AnyObject {
         func sendCtrl(_ payload: CtrlPayload) async
