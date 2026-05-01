@@ -159,6 +159,9 @@ final class SessionStore {
         case .guiInputAck(let supId, let code, let msg):
             supervisionStore?.handleGuiInputAck(supId: supId, code: code, message: msg)
 
+        case .fitFailed(let supId, let reason):
+            supervisionStore?.handleFitFailed(supId: supId, reason: reason)
+
         default:
             break
         }
