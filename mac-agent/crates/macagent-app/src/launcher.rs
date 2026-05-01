@@ -8,6 +8,8 @@ use tokio::process::Command;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LauncherConfig {
     pub launchers: Vec<Launcher>,
+    #[serde(default)]
+    pub gui: GuiConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,6 +18,29 @@ pub struct Launcher {
     pub label: String,
     pub argv: Vec<String>,
     pub cwd: Option<String>,
+}
+
+/// M7 GUI app launch whitelist (bundle ids allowed via launcher_m7).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuiConfig {
+    #[serde(default = "default_allowed_bundles")]
+    pub allowed_bundles: Vec<String>,
+}
+
+impl Default for GuiConfig {
+    fn default() -> Self {
+        Self {
+            allowed_bundles: default_allowed_bundles(),
+        }
+    }
+}
+
+fn default_allowed_bundles() -> Vec<String> {
+    vec![
+        "com.openai.chat".into(),
+        "com.anthropic.claude".into(),
+        "com.google.Chrome".into(),
+    ]
 }
 
 pub fn config_path() -> PathBuf {
@@ -74,6 +99,7 @@ impl LauncherConfig {
                     cwd: None,
                 },
             ],
+            gui: GuiConfig::default(),
         }
     }
 }
@@ -86,7 +112,14 @@ fn default_json5_string() -> &'static str {
     { "id": "codex",       "label": "Codex",         "argv": ["codex"],             "cwd": null },
     { "id": "npm-test",    "label": "npm test",      "argv": ["npm", "test"],       "cwd": null },
     { "id": "git-status",  "label": "git status",    "argv": ["git", "status"],     "cwd": null }
-  ]
+  ],
+  "gui": {
+    "allowed_bundles": [
+      "com.openai.chat",
+      "com.anthropic.claude",
+      "com.google.Chrome"
+    ]
+  }
 }
 "#
 }
