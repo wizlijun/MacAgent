@@ -6,7 +6,7 @@ pub mod perm;
 mod annexb;
 mod encoder;
 mod stream;
-mod windows;
+pub(crate) mod windows;
 
 use anyhow::Result;
 use macagent_core::ctrl_msg::WindowInfo;

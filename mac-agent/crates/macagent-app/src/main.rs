@@ -7,6 +7,8 @@ mod gui_capture;
 mod input_injector;
 mod keychain;
 mod launcher;
+#[allow(dead_code)]
+mod launcher_m7;
 mod notify;
 mod notify_engine;
 mod pair_qr;
