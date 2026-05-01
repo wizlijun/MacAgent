@@ -657,6 +657,15 @@ impl eframe::App for MacAgentApp {
                     if let PairState::Paired { record } = &self.state {
                         let gui_capture = Arc::new(GuiCapture::new(VideoConfig::default()));
                         let ctrl_send_tx = self.ctrl_send_tx.clone();
+                        {
+                            let tx = ctrl_send_tx.clone();
+                            gui_capture.on_stream_ended(move |sup_id, reason| {
+                                let _ = tx.send(macagent_core::ctrl_msg::CtrlPayload::StreamEnded {
+                                    sup_id,
+                                    reason,
+                                });
+                            });
+                        }
 
                         // Build RtcPeer inside the async block; supervision_router needs it.
                         let worker_url = record.worker_url.clone();
