@@ -10,6 +10,7 @@ struct GuiStreamDetailView: View {
     @State private var lastDragLocation: CGPoint? = nil
     @State private var contentSize: CGSize = .zero
     @State private var showRetryBanner = false
+    @State private var fitToastVisible = false
 
     init(store: SupervisionStore, entry: SupervisionEntry) {
         self.store = store
@@ -53,6 +54,26 @@ struct GuiStreamDetailView: View {
         .onChange(of: store.lastInputAck) { _, ack in
             if let a = ack, a.code == "permission_denied" { showRetryBanner = true }
             if let a = ack, a.code == "ok" { showRetryBanner = false }
+        }
+        .viewportTracking(store: store)
+        .overlay(alignment: .top) {
+            if fitToastVisible {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text("无法调整窗口尺寸（letterbox 显示）")
+                        .font(.callout)
+                    Spacer()
+                }
+                .padding(8)
+                .background(Color.yellow.opacity(0.9))
+                .transition(.move(edge: .top))
+                .allowsHitTesting(false)
+            }
+        }
+        .onChange(of: store.lastFitFailed) { _, new in
+            guard new != nil else { return }
+            fitToastVisible = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { fitToastVisible = false }
         }
     }
 
