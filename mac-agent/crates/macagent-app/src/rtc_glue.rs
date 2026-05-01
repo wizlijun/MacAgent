@@ -157,7 +157,8 @@ pub async fn run_glue(
     };
 
     let _ = state_tx.send(GlueState::SignalingConnected);
-    let signaling = connect_signaling(&cfg).await?;
+    // Exponential-backoff retry: 1s → 2s → 4s → 8s (cap), infinite loop.
+    let signaling = connect_signaling_with_retry(&cfg).await;
 
     // Wrap in Arc<Mutex> so the on_local_candidate callback can also send.
     let signaling = Arc::new(Mutex::new(signaling));
@@ -471,6 +472,24 @@ pub async fn fetch_turn_cred_for(
         });
     }
     Ok(out)
+}
+
+/// Retry connect_signaling with exponential backoff (1→2→4→8s cap, infinite).
+async fn connect_signaling_with_retry(cfg: &GlueConfig) -> SignalingClient {
+    let mut delay = Duration::from_secs(1);
+    let max = Duration::from_secs(8);
+    loop {
+        match connect_signaling(cfg).await {
+            Ok(c) => return c,
+            Err(e) => {
+                eprintln!("[signaling] connect failed: {e:#}, retrying in {delay:?}");
+                tokio::time::sleep(delay).await;
+                if delay < max {
+                    delay = (delay * 2).min(max);
+                }
+            }
+        }
+    }
 }
 
 async fn connect_signaling(cfg: &GlueConfig) -> Result<SignalingClient> {

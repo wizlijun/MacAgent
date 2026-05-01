@@ -17,6 +17,15 @@ struct PairedView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 12) {
+                if rtcState == .reconnecting {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("网络抖动，重连中…").font(.callout)
+                        Spacer()
+                    }
+                    .padding(8)
+                    .background(Color.yellow.opacity(0.9))
+                }
                 Image(systemName: "checkmark.seal.fill")
                     .resizable().scaledToFit().frame(maxWidth: 80).foregroundStyle(.green)
                 Text("已配对").font(.title.bold())

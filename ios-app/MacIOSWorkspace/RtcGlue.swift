@@ -1,7 +1,7 @@
 import Foundation
 import WebRTC
 
-enum GlueState: Equatable { case idle, fetchingTurn, signalingConnected, negotiating, connected, failed }
+enum GlueState: Equatable { case idle, fetchingTurn, signalingConnected, negotiating, connected, reconnecting, failed }
 
 actor RtcGlue {
     private let pair: PairStore.PairedPair
@@ -172,6 +172,8 @@ actor RtcGlue {
     private func handleState(_ s: RtcClient.PeerState) {
         switch s {
         case .connected: emit(.connected)
+        // ICE flap: peer briefly disconnected; ICE-restart path will recover.
+        case .disconnected: emit(.reconnecting)
         case .failed, .closed: emit(.failed)
         default: emit(.negotiating)
         }
