@@ -660,9 +660,42 @@ pub fn run_main() -> anyhow::Result<()> {
     eframe::run_native(
         "macagent",
         native_options,
-        Box::new(move |_cc| Ok(Box::new(UiHolder { rt, app }))),
+        Box::new(move |cc| {
+            setup_cjk_fonts(&cc.egui_ctx);
+            Ok(Box::new(UiHolder { rt, app }))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {}", e))
+}
+
+/// Register a CJK fallback font so 中文 doesn't render as tofu.
+fn setup_cjk_fonts(ctx: &egui::Context) {
+    const CANDIDATES: &[&str] = &[
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    ];
+    for path in CANDIDATES {
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        let mut fonts = egui::FontDefinitions::default();
+        fonts
+            .font_data
+            .insert("cjk".to_owned(), egui::FontData::from_owned(bytes));
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .push("cjk".to_owned());
+        fonts
+            .families
+            .entry(egui::FontFamily::Monospace)
+            .or_default()
+            .push("cjk".to_owned());
+        ctx.set_fonts(fonts);
+        eprintln!("[ui] loaded CJK font from {path}");
+        return;
+    }
+    eprintln!("[ui] no CJK font found; Chinese characters may render as tofu");
 }
 
 struct UiHolder {
