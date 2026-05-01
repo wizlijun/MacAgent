@@ -1,6 +1,5 @@
 use macagent_core::ctrl_msg::{
-    canonical_bytes, sign, verify, CtrlPayload, SupervisionEntry, SupervisionSource,
-    SupervisionStatus, Viewport, WindowInfo,
+    canonical_bytes, sign, verify, CtrlPayload, SupStatus, SupervisionEntry, Viewport, WindowInfo,
 };
 
 #[test]
@@ -26,10 +25,7 @@ fn windows_list_round_trip() {
 fn supervise_existing_with_viewport_round_trip() {
     let p = CtrlPayload::SuperviseExisting {
         window_id: 42,
-        viewport: Viewport {
-            width: 393,
-            height: 852,
-        },
+        viewport: Viewport { w: 393, h: 852 },
     };
     let json = serde_json::to_string(&p).unwrap();
     let back: CtrlPayload = serde_json::from_str(&json).unwrap();
@@ -47,9 +43,9 @@ fn supervised_ack_canonical_bytes_sorted_recursively() {
             title: "GH".into(),
             width: 1440,
             height: 900,
-            status: SupervisionStatus::Active,
-            source: SupervisionSource::Existing,
-            started_ts: 1735200000000,
+            status: SupStatus::Active,
+            original_frame: None,
+            thumb_jpeg_b64: None,
         },
     };
     let bytes = canonical_bytes(&p);
@@ -71,9 +67,9 @@ fn sign_and_verify_supervised_ack_with_nested() {
             title: "Y".into(),
             width: 800,
             height: 600,
-            status: SupervisionStatus::Active,
-            source: SupervisionSource::Existing,
-            started_ts: 0,
+            status: SupStatus::Active,
+            original_frame: None,
+            thumb_jpeg_b64: None,
         },
     };
     let secret = [0xAB; 32];

@@ -290,6 +290,20 @@ pub enum CtrlPayload {
         code: String,
         message: Option<String>,
     },
+
+    // M7: launcher + multi-supervise + viewport adaptation
+    SuperviseLaunch {
+        bundle_id: String,
+        viewport: Viewport,
+    },
+    SwitchActive {
+        sup_id: String,
+        viewport: Viewport,
+    },
+    FitFailed {
+        sup_id: String,
+        reason: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -316,29 +330,33 @@ pub struct SupervisionEntry {
     pub title: String,
     pub width: u32,
     pub height: u32,
-    pub status: SupervisionStatus,
-    pub source: SupervisionSource,
-    pub started_ts: u64,
+    pub status: SupStatus,
+    pub original_frame: Option<WindowRect>,
+    pub thumb_jpeg_b64: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SupervisionStatus {
+/// Status of a supervised window in the M7 multi-entry registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SupStatus {
     Active,
+    Armed,
     Dead,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SupervisionSource {
-    Existing,
-    Launched,
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Viewport {
+    pub w: u32,
+    pub h: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Viewport {
-    pub width: u32,
-    pub height: u32,
+/// Window rectangle in screen coordinates (CGWindow / AX).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
 }
 
 // ---------------------------------------------------------------------------

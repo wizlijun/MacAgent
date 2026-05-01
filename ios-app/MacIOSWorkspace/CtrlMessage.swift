@@ -197,80 +197,34 @@ struct SupervisionEntry: Codable, Equatable {
     let title: String
     let width: UInt32
     let height: UInt32
-    let status: SupervisionStatus
-    let source: SupervisionSource
-    let startedTs: UInt64
+    let status: SupStatus
+    let originalFrame: WindowRect?
+    let thumbJpegB64: String?
 
     enum CodingKeys: String, CodingKey {
         case supId = "sup_id"
         case windowId = "window_id"
         case appName = "app_name"
-        case title, width, height, status, source
-        case startedTs = "started_ts"
+        case title, width, height, status
+        case originalFrame = "original_frame"
+        case thumbJpegB64 = "thumb_jpeg_b64"
     }
 }
 
-enum SupervisionStatus: Codable, Equatable {
-    case active
-    case dead
-
-    private enum CodingKeys: String, CodingKey { case kind }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        let kind = try c.decode(String.self, forKey: .kind)
-        switch kind {
-        case "active": self = .active
-        case "dead": self = .dead
-        default:
-            throw DecodingError.dataCorrupted(.init(
-                codingPath: decoder.codingPath,
-                debugDescription: "unknown SupervisionStatus kind \(kind)"
-            ))
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .active: try c.encode("active", forKey: .kind)
-        case .dead: try c.encode("dead", forKey: .kind)
-        }
-    }
-}
-
-enum SupervisionSource: Codable, Equatable {
-    case existing
-    case launched
-
-    private enum CodingKeys: String, CodingKey { case kind }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        let kind = try c.decode(String.self, forKey: .kind)
-        switch kind {
-        case "existing": self = .existing
-        case "launched": self = .launched
-        default:
-            throw DecodingError.dataCorrupted(.init(
-                codingPath: decoder.codingPath,
-                debugDescription: "unknown SupervisionSource kind \(kind)"
-            ))
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .existing: try c.encode("existing", forKey: .kind)
-        case .launched: try c.encode("launched", forKey: .kind)
-        }
-    }
+enum SupStatus: String, Codable, Equatable {
+    case active, armed, dead
 }
 
 struct Viewport: Codable, Equatable {
-    let width: UInt32
-    let height: UInt32
+    let w: UInt32
+    let h: UInt32
+}
+
+struct WindowRect: Codable, Equatable {
+    let x: Int32
+    let y: Int32
+    let w: Int32
+    let h: Int32
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +424,11 @@ enum CtrlPayload: Codable, Equatable {
     case guiInputCmd(supId: String, payload: GuiInput)
     case guiInputAck(supId: String, code: String, message: String?)
 
+    // M7: launcher + multi-supervise + viewport adaptation
+    case superviseLaunch(bundleId: String, viewport: Viewport)
+    case switchActive(supId: String, viewport: Viewport)
+    case fitFailed(supId: String, reason: String)
+
     // MARK: - Coding keys
 
     private enum CodingKeys: String, CodingKey {
@@ -483,6 +442,7 @@ enum CtrlPayload: Codable, Equatable {
         case watcher_id, regex, name, watchers, line_text
         case window_id, viewport, sup_id, entry, windows, entries
         case message
+        case bundle_id
     }
 
     // MARK: - canonical bytes
@@ -638,6 +598,22 @@ enum CtrlPayload: Codable, Equatable {
             var d: [String: Any] = ["type": "gui_input_ack", "sup_id": supId, "code": code]
             if let m = message { d["message"] = m } else { d["message"] = NSNull() }
             return try CanonicalJSON.encode(d)
+
+        case .superviseLaunch(let bundleId, let viewport):
+            let encoder = JSONEncoder()
+            let vpData = try encoder.encode(viewport)
+            let vpObj = try JSONSerialization.jsonObject(with: vpData)
+            return try CanonicalJSON.encode(["type": "supervise_launch",
+                                             "bundle_id": bundleId, "viewport": vpObj])
+        case .switchActive(let supId, let viewport):
+            let encoder = JSONEncoder()
+            let vpData = try encoder.encode(viewport)
+            let vpObj = try JSONSerialization.jsonObject(with: vpData)
+            return try CanonicalJSON.encode(["type": "switch_active",
+                                             "sup_id": supId, "viewport": vpObj])
+        case .fitFailed(let supId, let reason):
+            return try CanonicalJSON.encode(["type": "fit_failed",
+                                             "sup_id": supId, "reason": reason])
         }
     }
 
@@ -790,6 +766,19 @@ enum CtrlPayload: Codable, Equatable {
             try c.encode(supId, forKey: .sup_id)
             try c.encode(code, forKey: .code)
             try c.encode(message, forKey: .message)
+
+        case .superviseLaunch(let bundleId, let viewport):
+            try c.encode("supervise_launch", forKey: .type)
+            try c.encode(bundleId, forKey: .bundle_id)
+            try c.encode(viewport, forKey: .viewport)
+        case .switchActive(let supId, let viewport):
+            try c.encode("switch_active", forKey: .type)
+            try c.encode(supId, forKey: .sup_id)
+            try c.encode(viewport, forKey: .viewport)
+        case .fitFailed(let supId, let reason):
+            try c.encode("fit_failed", forKey: .type)
+            try c.encode(supId, forKey: .sup_id)
+            try c.encode(reason, forKey: .reason)
         }
     }
 
@@ -966,6 +955,22 @@ enum CtrlPayload: Codable, Equatable {
                 supId: try c.decode(String.self, forKey: .sup_id),
                 code: try c.decode(String.self, forKey: .code),
                 message: try c.decodeIfPresent(String.self, forKey: .message)
+            )
+
+        case "supervise_launch":
+            self = .superviseLaunch(
+                bundleId: try c.decode(String.self, forKey: .bundle_id),
+                viewport: try c.decode(Viewport.self, forKey: .viewport)
+            )
+        case "switch_active":
+            self = .switchActive(
+                supId: try c.decode(String.self, forKey: .sup_id),
+                viewport: try c.decode(Viewport.self, forKey: .viewport)
+            )
+        case "fit_failed":
+            self = .fitFailed(
+                supId: try c.decode(String.self, forKey: .sup_id),
+                reason: try c.decode(String.self, forKey: .reason)
             )
 
         default:

@@ -1,9 +1,7 @@
 //! ctrl ↔ GuiCapture + RtcPeer video track 桥。
 
 use anyhow::Result;
-use macagent_core::ctrl_msg::{
-    CtrlPayload, SupervisionEntry, SupervisionSource, SupervisionStatus,
-};
+use macagent_core::ctrl_msg::{CtrlPayload, SupStatus, SupervisionEntry};
 use macagent_core::rtc_peer::{RtcPeer, VideoTrackHandle};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -137,9 +135,9 @@ impl SupervisionRouter {
                     title: window.title.clone(),
                     width: window.width,
                     height: window.height,
-                    status: SupervisionStatus::Active,
-                    source: SupervisionSource::Existing,
-                    started_ts,
+                    status: SupStatus::Active,
+                    original_frame: None,
+                    thumb_jpeg_b64: None,
                 };
                 *active = Some(ActiveSupervision {
                     sup_id: sup_id.clone(),

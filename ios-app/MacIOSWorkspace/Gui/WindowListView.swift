@@ -31,7 +31,7 @@ struct WindowListView: View {
                             Task {
                                 await store.supervise(
                                     windowId: w.windowId,
-                                    viewport: Viewport(width: 393, height: 852)
+                                    viewport: Viewport(w: 393, h: 852)
                                 )
                             }
                         } label: {
