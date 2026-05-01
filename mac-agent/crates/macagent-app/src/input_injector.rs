@@ -1,6 +1,20 @@
 //! Mac InputInjector — CGEvent click/scroll/keyboard for supervised windows.
 
-use macagent_core::ctrl_msg::KeyMod;
+use anyhow::{anyhow, Result};
+use core_graphics::event::{
+    CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton, ScrollEventUnit,
+};
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use core_graphics::geometry::CGPoint;
+use macagent_core::ctrl_msg::{CtrlPayload, GuiInput, KeyMod};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc::UnboundedSender;
+
+use crate::gui_capture::GuiCapture;
+use crate::supervision_router::SupervisionRouter;
+
+const UNICODE_CHUNK: usize = 20;
 
 /// Global-screen rectangle of a supervised window (top-left origin, points).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -86,6 +100,176 @@ pub fn chunk_unicode(text: &str, max_chars: usize) -> Vec<String> {
         out.push(buf);
     }
     out
+}
+
+/// Mac-side dispatcher for `GuiInput` payloads from iOS.
+pub struct InputInjector {
+    gui_capture: Arc<GuiCapture>,
+    supervision: Arc<SupervisionRouter>,
+    ctrl_tx: UnboundedSender<CtrlPayload>,
+    perm_cached: Mutex<bool>,
+    last_perm_check: Mutex<Instant>,
+}
+
+impl InputInjector {
+    pub fn new(
+        gui_capture: Arc<GuiCapture>,
+        supervision: Arc<SupervisionRouter>,
+        ctrl_tx: UnboundedSender<CtrlPayload>,
+    ) -> Self {
+        Self {
+            gui_capture,
+            supervision,
+            ctrl_tx,
+            perm_cached: Mutex::new(false),
+            // Initialize "last check" to a time far in the past so first call refreshes.
+            last_perm_check: Mutex::new(Instant::now() - Duration::from_secs(120)),
+        }
+    }
+
+    /// Cached AX preflight (60s TTL). Returns true if AX permission granted.
+    pub fn check_ax(&self) -> bool {
+        let now = Instant::now();
+        let mut last = self.last_perm_check.lock().unwrap();
+        if now.duration_since(*last) > Duration::from_secs(60) {
+            let granted = ax_is_process_trusted();
+            *self.perm_cached.lock().unwrap() = granted;
+            *last = now;
+            granted
+        } else {
+            *self.perm_cached.lock().unwrap()
+        }
+    }
+
+    /// Force a fresh AX check (e.g. on user-clicked retry).
+    pub fn refresh_ax(&self) -> bool {
+        let granted = ax_is_process_trusted();
+        *self.perm_cached.lock().unwrap() = granted;
+        *self.last_perm_check.lock().unwrap() = Instant::now();
+        granted
+    }
+
+    /// Async dispatch entry point invoked from ctrl recv loop.
+    pub async fn handle_input(&self, sup_id: String, input: GuiInput) {
+        if !self.check_ax() {
+            self.ack(&sup_id, "permission_denied", None);
+            return;
+        }
+        let Some(window_id) = self.supervision.current_window_id(&sup_id).await else {
+            self.ack(&sup_id, "window_gone", None);
+            return;
+        };
+        let Some(target) = self.gui_capture.lookup_target(window_id) else {
+            self.ack(&sup_id, "window_gone", None);
+            return;
+        };
+        if let Err(e) = activate_pid(target.pid) {
+            self.ack(&sup_id, "no_focus", Some(format!("{e:#}")));
+            return;
+        }
+        let res = match input {
+            GuiInput::Tap { x, y } => post_click(target.frame, x, y),
+            GuiInput::Scroll { dx, dy } => post_scroll(dx, dy),
+            GuiInput::KeyText { text } => post_unicode(&text),
+            GuiInput::KeyCombo { modifiers, key } => post_keycombo(&modifiers, &key),
+        };
+        match res {
+            Ok(()) => self.ack(&sup_id, "ok", None),
+            Err(e) => self.ack(&sup_id, "no_focus", Some(format!("{e:#}"))),
+        }
+    }
+
+    fn ack(&self, sup_id: &str, code: &str, message: Option<String>) {
+        let _ = self.ctrl_tx.send(CtrlPayload::GuiInputAck {
+            sup_id: sup_id.into(),
+            code: code.into(),
+            message,
+        });
+    }
+}
+
+/// FFI wrapper for AXIsProcessTrusted from ApplicationServices framework.
+fn ax_is_process_trusted() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    // SAFETY: C function with no args/state; safe to call any thread.
+    unsafe { AXIsProcessTrusted() }
+}
+
+/// Bring the target app to the front using NSRunningApplication.
+fn activate_pid(pid: i32) -> Result<()> {
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+    let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+        .ok_or_else(|| anyhow!("no running app for pid {pid}"))?;
+    // ActivateIgnoringOtherApps is deprecated in macOS 14 but still functional.
+    #[allow(deprecated)]
+    let _ = app.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps);
+    Ok(())
+}
+
+fn make_source() -> Result<CGEventSource> {
+    CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+        .map_err(|_| anyhow!("CGEventSource::new failed"))
+}
+
+fn post_click(frame: WindowFrame, x: f32, y: f32) -> Result<()> {
+    let (gx, gy) = normalize_to_global(&frame, x, y);
+    let src = make_source()?;
+    let pt = CGPoint::new(gx as f64, gy as f64);
+    let down = CGEvent::new_mouse_event(
+        src.clone(),
+        CGEventType::LeftMouseDown,
+        pt,
+        CGMouseButton::Left,
+    )
+    .map_err(|_| anyhow!("create LeftMouseDown failed"))?;
+    let up = CGEvent::new_mouse_event(src, CGEventType::LeftMouseUp, pt, CGMouseButton::Left)
+        .map_err(|_| anyhow!("create LeftMouseUp failed"))?;
+    down.post(CGEventTapLocation::HID);
+    up.post(CGEventTapLocation::HID);
+    Ok(())
+}
+
+fn post_scroll(dx: f32, dy: f32) -> Result<()> {
+    let src = make_source()?;
+    // wheel1 = vertical, wheel2 = horizontal (pixel units).
+    let ev = CGEvent::new_scroll_event(src, ScrollEventUnit::PIXEL, 2, dy as i32, dx as i32, 0)
+        .map_err(|_| anyhow!("create scroll failed"))?;
+    ev.post(CGEventTapLocation::HID);
+    Ok(())
+}
+
+fn post_unicode(text: &str) -> Result<()> {
+    let src = make_source()?;
+    for chunk in chunk_unicode(text, UNICODE_CHUNK) {
+        let down = CGEvent::new_keyboard_event(src.clone(), 0, true)
+            .map_err(|_| anyhow!("create keyDown failed"))?;
+        let utf16: Vec<u16> = chunk.encode_utf16().collect();
+        down.set_string_from_utf16_unchecked(&utf16);
+        let up = CGEvent::new_keyboard_event(src.clone(), 0, false)
+            .map_err(|_| anyhow!("create keyUp failed"))?;
+        up.set_string_from_utf16_unchecked(&utf16);
+        down.post(CGEventTapLocation::HID);
+        up.post(CGEventTapLocation::HID);
+    }
+    Ok(())
+}
+
+fn post_keycombo(mods: &[KeyMod], key: &str) -> Result<()> {
+    let kc = lookup_keycode(key).ok_or_else(|| anyhow!("unknown key: {key}"))?;
+    let flags = CGEventFlags::from_bits_retain(pack_modifier_flags(mods));
+    let src = make_source()?;
+    let down = CGEvent::new_keyboard_event(src.clone(), kc, true)
+        .map_err(|_| anyhow!("create keyDown failed"))?;
+    down.set_flags(flags);
+    let up = CGEvent::new_keyboard_event(src, kc, false)
+        .map_err(|_| anyhow!("create keyUp failed"))?;
+    up.set_flags(flags);
+    down.post(CGEventTapLocation::HID);
+    up.post(CGEventTapLocation::HID);
+    Ok(())
 }
 
 #[cfg(test)]

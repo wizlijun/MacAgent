@@ -36,7 +36,7 @@ uuid = { version = "1.10", features = ["v4"] }
 dirs = "5"
 shell-escape = "0.1"
 regex = "1"
-core-graphics = "0.24"
+core-graphics = { version = "0.24", features = ["highsierra"] }
 core-foundation = "0.10"
 screencapturekit = "0.3"
 core-media-rs = "0.3"
