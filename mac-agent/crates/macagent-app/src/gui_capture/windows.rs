@@ -10,7 +10,7 @@ use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::window::{
     copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer,
     kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowName,
-    kCGWindowNumber, kCGWindowOwnerName,
+    kCGWindowNumber, kCGWindowOwnerName, kCGWindowOwnerPID,
 };
 use macagent_core::ctrl_msg::WindowInfo;
 use std::ffi::c_void;
@@ -81,6 +81,38 @@ pub fn list_windows() -> Result<Vec<WindowInfo>> {
     Ok(out)
 }
 
+/// Live window-target lookup: pid + global-screen frame for a single window_id.
+/// Returns None if the window has gone away (caller should treat as `window_gone`).
+pub struct FoundWindow {
+    pub pid: i32,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+pub fn find_window(window_id: u32) -> Option<FoundWindow> {
+    let option = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+    let raw = copy_window_info(option, kCGNullWindowID)?;
+    let count = raw.len();
+    let arr_ref: CFArrayRef = raw.as_concrete_TypeRef();
+    for i in 0..count {
+        let ptr = unsafe { CFArrayGetValueAtIndex(arr_ref, i) };
+        if ptr.is_null() {
+            continue;
+        }
+        let dict: CFDictionary = unsafe { TCFType::wrap_under_get_rule(ptr as CFDictionaryRef) };
+        let wid = dict_number_u32(&dict, unsafe { kCGWindowNumber })?;
+        if wid != window_id {
+            continue;
+        }
+        let pid = dict_number_i32(&dict, unsafe { kCGWindowOwnerPID })?;
+        let (x, y, w, h) = dict_bounds_full(&dict)?;
+        return Some(FoundWindow { pid, x, y, w, h });
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Low-level helpers: look up typed values in an untyped CFDictionary.
 // All key statics are CFStringRef exported from CoreGraphics.
@@ -124,6 +156,25 @@ fn dict_bool(dict: &CFDictionary, key_ref: CFStringRef) -> Option<bool> {
     let v = dict_value(dict, key_ref)?;
     let b: CFBoolean = unsafe { TCFType::wrap_under_get_rule(v as CFBooleanRef) };
     Some(b == CFBoolean::true_value())
+}
+
+/// Extract (x, y, w, h) ints from the CGWindowBounds sub-dictionary.
+fn dict_bounds_full(dict: &CFDictionary) -> Option<(i32, i32, i32, i32)> {
+    let v = dict_value(dict, unsafe { kCGWindowBounds })?;
+    let bounds: CFDictionary = unsafe { TCFType::wrap_under_get_rule(v as CFDictionaryRef) };
+    let read = |name: &str| -> Option<i32> {
+        let key = CFString::new(name);
+        let mut out: *const c_void = std::ptr::null();
+        let f = unsafe {
+            CFDictionaryGetValueIfPresent(bounds.as_concrete_TypeRef(), key.as_CFTypeRef(), &mut out)
+        };
+        if f == 0 || out.is_null() {
+            return None;
+        }
+        let n: CFNumber = unsafe { TCFType::wrap_under_get_rule(out as CFNumberRef) };
+        n.to_i64().map(|v| v as i32)
+    };
+    Some((read("X")?, read("Y")?, read("Width")?, read("Height")?))
 }
 
 /// Extract (width, height) from the CGWindowBounds sub-dictionary.

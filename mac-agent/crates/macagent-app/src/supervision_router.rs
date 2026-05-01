@@ -25,6 +25,7 @@ pub struct SupervisionRouter {
 #[allow(dead_code)]
 struct ActiveSupervision {
     sup_id: String,
+    /// Used by InputInjector (M6) to re-resolve live frame each event.
     window_id: u32,
     app_name: String,
     title: String,
@@ -160,6 +161,17 @@ impl SupervisionRouter {
             }
         }
         Ok(())
+    }
+
+    /// Look up the window_id of the active supervision matching `sup_id`.
+    /// Returns None if no supervision is active or the id doesn't match.
+    /// Used by InputInjector (M6.4) — wired up in M6.5.
+    #[allow(dead_code)]
+    pub async fn current_window_id(&self, sup_id: &str) -> Option<u32> {
+        let active = self.active.lock().await;
+        active
+            .as_ref()
+            .and_then(|a| (a.sup_id == sup_id).then_some(a.window_id))
     }
 
     async fn remove_supervised(&self, sup_id: String) -> Result<()> {

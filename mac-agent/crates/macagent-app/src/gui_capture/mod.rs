@@ -13,6 +13,15 @@ use macagent_core::ctrl_msg::WindowInfo;
 use macagent_core::rtc_peer::VideoTrackHandle;
 use std::sync::{Arc, Mutex};
 
+use crate::input_injector::WindowFrame;
+
+/// Live (pid, frame) for a supervised window. Used by InputInjector each event.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InputTarget {
+    pub pid: i32,
+    pub frame: WindowFrame,
+}
+
 type StreamEndedCb = Arc<dyn Fn(String, String) + Send + Sync>;
 
 #[derive(Clone)]
@@ -79,6 +88,16 @@ impl GuiCapture {
             }
         });
         Ok(())
+    }
+
+    /// Re-resolve the live (pid, frame) of the supervised window.
+    /// Returns None if the window has gone (caller emits window_gone).
+    pub fn lookup_target(&self, window_id: u32) -> Option<InputTarget> {
+        let f = windows::find_window(window_id)?;
+        Some(InputTarget {
+            pid: f.pid,
+            frame: WindowFrame { x: f.x, y: f.y, w: f.w, h: f.h },
+        })
     }
 
     /// Stop the stream for the given supervision id.

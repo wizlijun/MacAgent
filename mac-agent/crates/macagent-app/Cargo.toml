@@ -47,6 +47,7 @@ objc2-core-foundation = { workspace = true }
 objc2-core-media = { workspace = true }
 objc2-core-video = { workspace = true }
 objc2-video-toolbox = { workspace = true }
+objc2-app-kit = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
