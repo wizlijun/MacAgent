@@ -90,6 +90,28 @@ pub fn spawn_pty(
         }
     });
 
+    // Local-stdin forwarder thread: parent terminal keystrokes → PTY stdin.
+    // Without this the Mac terminal where `macagent run` was launched is
+    // read-only — iOS can input but the host can't. Best-effort: if stdin
+    // isn't a TTY (piped/redirected), this thread just blocks harmlessly.
+    let stdin_input_tx = input_tx.clone();
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let mut handle = stdin.lock();
+        let mut buf = [0u8; 1024];
+        loop {
+            match handle.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if stdin_input_tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
     // Reader thread: PTY stdout → chunk_tx + local stdout tee.
     std::thread::spawn(move || {
         let mut buffer = [0u8; 4096];

@@ -44,6 +44,9 @@ pub struct RunArgs {
 
 /// Entry point for `macagent run`.
 pub fn run_main(args: RunArgs) -> Result<()> {
+    // Hold the raw-mode guard for the lifetime of the producer so the parent
+    // terminal forwards each keystroke to the PTY without local echo.
+    let _raw = RawTtyGuard::enter_if_tty();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -51,6 +54,41 @@ pub fn run_main(args: RunArgs) -> Result<()> {
         let mut producer = Producer::new(args).await?;
         producer.run().await
     })
+}
+
+/// RAII: put STDIN into raw mode and restore on drop.
+struct RawTtyGuard {
+    fd: libc::c_int,
+    saved: libc::termios,
+}
+
+impl RawTtyGuard {
+    fn enter_if_tty() -> Option<Self> {
+        let fd = libc::STDIN_FILENO;
+        unsafe {
+            if libc::isatty(fd) == 0 {
+                return None;
+            }
+            let mut saved = std::mem::zeroed::<libc::termios>();
+            if libc::tcgetattr(fd, &mut saved) != 0 {
+                return None;
+            }
+            let mut raw = saved;
+            libc::cfmakeraw(&mut raw);
+            if libc::tcsetattr(fd, libc::TCSAFLUSH, &raw) != 0 {
+                return None;
+            }
+            Some(Self { fd, saved })
+        }
+    }
+}
+
+impl Drop for RawTtyGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = libc::tcsetattr(self.fd, libc::TCSAFLUSH, &self.saved);
+        }
+    }
 }
 
 // ─── Producer ────────────────────────────────────────────────────────────────
