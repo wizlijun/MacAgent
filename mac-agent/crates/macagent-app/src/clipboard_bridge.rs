@@ -42,15 +42,18 @@ impl ClipboardBridge {
     }
 
     /// Write iOS-originated content to NSPasteboard via `pbcopy`.
-    /// Updates `last_hash` immediately to prevent the next poll tick from bouncing
-    /// the just-written content back to iOS.
+    /// On success, updates `last_hash` so the next poll tick doesn't bounce the
+    /// just-written content back to iOS. On failure, leaves `last_hash` alone
+    /// so a subsequent retry/poll can still surface the right content.
     pub fn write_remote(&self, content: &ClipContent) {
         match content {
-            ClipContent::Text { data } => {
-                let _ = pbcopy(data.as_bytes());
-                self.last_hash
-                    .store(simple_hash(data) as i64, Ordering::SeqCst);
-            }
+            ClipContent::Text { data } => match pbcopy(data.as_bytes()) {
+                Ok(()) => {
+                    self.last_hash
+                        .store(simple_hash(data) as i64, Ordering::SeqCst);
+                }
+                Err(e) => eprintln!("[clipboard] pbcopy failed: {e}"),
+            },
         }
     }
 }
