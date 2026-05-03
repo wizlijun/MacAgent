@@ -96,6 +96,9 @@ export async function handlePairRevoke(req: Request, env: Env): Promise<Response
   }
   await markRevoked(env, body.pair_id, "client_initiated");
   await env.PAIRS.delete(`pair:${body.pair_id}`);
+  // Drop APNs state too so a re-pair under the same id can't push to a stale token.
+  await env.PAIRS.delete(`apns_token:${body.pair_id}`);
+  await env.PAIRS.delete(`apns_dead:${body.pair_id}`);
   return Response.json({ revoked: true });
 }
 
