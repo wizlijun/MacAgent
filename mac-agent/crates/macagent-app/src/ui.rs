@@ -107,6 +107,8 @@ pub struct MacAgentApp {
     perm_cache: Option<(Instant, onboarding::PermissionStatus, onboarding::PermissionStatus)>,
     /// Text buffer for the "add bundle id" input in the whitelist editor.
     whitelist_input: String,
+    /// Best-effort handle to the running glue task; aborted on Revoke.
+    glue_join: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl MacAgentApp {
@@ -238,6 +240,7 @@ impl MacAgentApp {
             input_injector: Arc::new(Mutex::new(None)),
             perm_cache: None,
             whitelist_input: String::new(),
+            glue_join: None,
         })
     }
 
@@ -797,12 +800,28 @@ impl eframe::App for MacAgentApp {
                     if let PairState::Paired { record } = &self.state {
                         let gui_capture = Arc::new(GuiCapture::new(VideoConfig::default()));
                         let ctrl_send_tx = self.ctrl_send_tx.clone();
+                        // SupervisionRouter is built later in the spawned task; share via Mutex<Option<_>>.
+                        let sup_router_slot: Arc<Mutex<Option<Arc<SupervisionRouter>>>> =
+                            Arc::new(Mutex::new(None));
                         {
                             let tx = ctrl_send_tx.clone();
+                            let slot = Arc::clone(&sup_router_slot);
                             gui_capture.on_stream_ended(move |sup_id, reason| {
-                                let _ = tx.send(macagent_core::ctrl_msg::CtrlPayload::StreamEnded {
-                                    sup_id,
-                                    reason,
+                                let sr = slot.lock().unwrap().clone();
+                                let tx = tx.clone();
+                                tokio::spawn(async move {
+                                    // Clean registry first so SwitchActive doesn't race on a stale entry.
+                                    if let Some(sr) = sr {
+                                        let _ = sr
+                                            .handle_remove_supervised(sup_id.clone())
+                                            .await;
+                                    }
+                                    let _ = tx.send(
+                                        macagent_core::ctrl_msg::CtrlPayload::StreamEnded {
+                                            sup_id,
+                                            reason,
+                                        },
+                                    );
                                 });
                             });
                         }
@@ -818,8 +837,9 @@ impl eframe::App for MacAgentApp {
                         let state_tx = self.glue_state_tx.clone();
                         let msg_tx = self.glue_msg_tx.clone();
                         let injector_slot = Arc::clone(&self.input_injector);
+                        let sup_router_slot_for_spawn = Arc::clone(&sup_router_slot);
 
-                        self.runtime.spawn(async move {
+                        let glue_handle = self.runtime.spawn(async move {
                             use macagent_core::rtc_peer::RtcPeer;
                             let ice = match crate::rtc_glue::fetch_turn_cred_for(
                                 &worker_url,
@@ -856,6 +876,9 @@ impl eframe::App for MacAgentApp {
                                 video_track,
                                 ctrl_send_tx.clone(),
                             ));
+                            // Wire stream_ended callback now that the router exists.
+                            *sup_router_slot_for_spawn.lock().unwrap() =
+                                Some(Arc::clone(&supervision_router));
                             let input_injector = Arc::new(InputInjector::new(
                                 Arc::clone(&gui_capture),
                                 Arc::clone(&supervision_router),
@@ -889,12 +912,17 @@ impl eframe::App for MacAgentApp {
                                 eprintln!("glue error: {e}");
                             }
                         });
+                        self.glue_join = Some(glue_handle);
                     }
                 }
                 StateTransition::Revoke => {
                     // Best-effort: fire-and-forget the Worker revoke call.
                     if let PairState::Paired { record } = &self.state {
                         self.spawn_worker_revoke(record);
+                    }
+                    // Best-effort: kill the live glue/peer task.
+                    if let Some(h) = self.glue_join.take() {
+                        h.abort();
                     }
                     if let Err(e) = Self::revoke_pair_record() {
                         self.last_error = Some(e.to_string());

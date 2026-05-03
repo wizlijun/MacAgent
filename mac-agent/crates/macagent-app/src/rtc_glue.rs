@@ -89,8 +89,8 @@ fn start_heartbeat(
 ) {
     tokio::spawn(async move {
         let mut ack_rx = ack_rx;
-        // Track when we last received an ack (start = now so we don't immediately miss)
-        let mut last_ack = tokio::time::Instant::now();
+        // Skip first 30s window so a slow first ack doesn't trigger a false miss.
+        let mut last_ack = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         loop {
             if cancel.load(Ordering::Relaxed) {
@@ -325,6 +325,8 @@ pub async fn run_glue(
                 GlueState::PeerConnected
             }
             PeerState::Failed => GlueState::Failed,
+            // Disconnected = transient ICE flap; keep UI calm and let heartbeat detect death.
+            PeerState::Disconnected => GlueState::PeerConnected,
             _ => GlueState::NegotiatingSdp,
         };
         let _ = st_tx.send(gs);

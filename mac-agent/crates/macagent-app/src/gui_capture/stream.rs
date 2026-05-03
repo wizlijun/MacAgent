@@ -93,9 +93,12 @@ struct StreamDelegate {
 
 impl SCStreamDelegateTrait for StreamDelegate {
     fn did_stop_with_error(&self, _stream: SCStream, error: core_foundation::error::CFError) {
-        if let Some(tx) = self.end_tx.lock().unwrap().take() {
-            let _ = tx.send(format!("stream_error: {:?}", error));
-        }
+        // SCStream callback may run on a non-Rust thread; catch panics so we don't UB across FFI.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(tx) = self.end_tx.lock().unwrap().take() {
+                let _ = tx.send(format!("stream_error: {:?}", error));
+            }
+        }));
     }
 }
 
@@ -117,7 +120,11 @@ impl ActiveStream {
         if let Some(h) = self.encoder_thread.take() {
             let _ = h.join();
         }
-        self.tokio_task.abort();
+        // Encoder thread drop closes sample_tx → drain task ends naturally; give 500ms grace.
+        let task = self.tokio_task;
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), task).await;
+        });
     }
 
     /// Take the most recent retained pixel buffer, if any.

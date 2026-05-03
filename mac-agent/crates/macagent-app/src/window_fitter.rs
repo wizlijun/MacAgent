@@ -76,9 +76,14 @@ pub fn compute_target_size(original: &WindowRect, viewport: Viewport) -> (i32, i
         w = MIN_W;
         h = ((w as f64) * vp_h / vp_w).round() as i32;
     }
-    // Then clamp height
-    h = h.clamp(MIN_H, MAX_H);
-    (w, h)
+    // Clamp height; if it bound, recompute width per aspect so we don't distort.
+    let h_clamped = h.clamp(MIN_H, MAX_H);
+    if h_clamped != h {
+        let aspect = vp_w / vp_h;
+        w = ((h_clamped as f64) * aspect).round() as i32;
+        w = w.clamp(MIN_W, MAX_W);
+    }
+    (w, h_clamped)
 }
 
 /// Find the AXUIElement for a window owned by `pid` whose frame best matches
@@ -237,15 +242,22 @@ pub fn fit(
 ) -> Result<WindowRect> {
     let _ = window_id; // window_id used by caller for logging; AX matches by frame
     // SAFETY: AX FFI calls — pid validated by caller; helpers handle CF ref lifetimes.
-    let (win, original) = unsafe {
+    // SAFETY: AX FFI block — release the chosen win on every exit path.
+    unsafe {
         let win = find_ax_window(owner_pid, current).context("find AX window")?;
-        let original = read_window_rect(win).context("read original rect")?;
-        (win, original)
-    };
-    let (tw, th) = compute_target_size(&original, viewport);
-    // SAFETY: `win` is a valid retained AXUIElement from find_ax_window above.
-    unsafe { set_window_size(win, tw, th)? };
-    Ok(original)
+        let original = match read_window_rect(win).context("read original rect") {
+            Ok(r) => r,
+            Err(e) => {
+                release(win as CFTypeRef);
+                return Err(e);
+            }
+        };
+        let (tw, th) = compute_target_size(&original, viewport);
+        let set_result = set_window_size(win, tw, th);
+        release(win as CFTypeRef);
+        set_result?;
+        Ok(original)
+    }
 }
 
 /// Restore the window's original frame.
@@ -264,13 +276,21 @@ pub fn restore(window_id: u32, owner_pid: i32, original: &WindowRect) -> Result<
         if sz_val.is_null() || pt_val.is_null() {
             release(sz_val);
             release(pt_val);
+            release(win as CFTypeRef);
             return Err(anyhow!("AXValueCreate failed"));
         }
-        let _ = AXUIElementSetAttributeValue(win, cf_str("AXSize").as_concrete_TypeRef(), sz_val);
-        let _ =
+        let sz_err =
+            AXUIElementSetAttributeValue(win, cf_str("AXSize").as_concrete_TypeRef(), sz_val);
+        let pt_err =
             AXUIElementSetAttributeValue(win, cf_str("AXPosition").as_concrete_TypeRef(), pt_val);
         release(sz_val);
         release(pt_val);
+        release(win as CFTypeRef);
+        if sz_err != AX_ERROR_SUCCESS || pt_err != AX_ERROR_SUCCESS {
+            return Err(anyhow!(
+                "AX restore partial fail: size_err={sz_err} pos_err={pt_err}"
+            ));
+        }
         Ok(())
     }
 }
@@ -281,13 +301,13 @@ mod tests {
 
     #[test]
     fn aspect_fit_keeps_width_scales_height() {
-        // 1440 wide window, viewport 393x760 (iPhone portrait)
-        // target_h = 1440 * (760/393) ≈ 2785 → clamped to 1200
+        // 1440 wide, vp 393x760 → h overflow → clamp to 1200, then recompute w to preserve aspect.
         let original = WindowRect { x: 0, y: 0, w: 1440, h: 900 };
         let viewport = Viewport { w: 393, h: 760 };
         let (w, h) = compute_target_size(&original, viewport);
-        assert_eq!(w, 1440);
-        assert_eq!(h, 1200); // clamped
+        assert_eq!(h, 1200);
+        // w = 1200 * (393/760) ≈ 620.5 → 621 (clamped between MIN_W..=MAX_W).
+        assert_eq!(w, 621);
     }
 
     #[test]
@@ -315,7 +335,8 @@ mod tests {
         let original = WindowRect { x: 0, y: 0, w: 3840, h: 2160 };
         let viewport = Viewport { w: 1024, h: 768 };
         let (w, h) = compute_target_size(&original, viewport);
-        assert_eq!(w, 1920); // clamped down to MAX_W
-        assert_eq!(h, 1200); // 1920 * 0.75 = 1440 → clamped down to MAX_H
+        // w clamps to 1920 → h = 1440 → clamps to 1200 → recompute w = 1200*(1024/768) = 1600.
+        assert_eq!(h, 1200);
+        assert_eq!(w, 1600);
     }
 }
