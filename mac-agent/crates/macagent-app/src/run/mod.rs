@@ -204,6 +204,10 @@ impl Producer {
                         }
                         A2P::KillRequest { reason } => {
                             eprintln!("[macagent run] kill requested: {reason}");
+                            // Flush a final delta+keyframe so iOS sees the terminal state
+                            // at exit instead of a stale snapshot. Errors here are non-fatal.
+                            let _ = self.push_delta().await;
+                            let _ = self.push_snapshot().await;
                             // Send SIGTERM to child process group via kill.
                             let pid = self.pty.pid;
                             unsafe { libc::kill(pid as i32, libc::SIGTERM); }
