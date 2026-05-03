@@ -16,6 +16,10 @@ actor RtcGlue {
     private var lastAckDate: Date? = nil
     private var sharedSecret: Data? = nil
 
+    // Trickle-ICE buffer: candidates received before remote description is set.
+    private var remoteDescriptionSet = false
+    private var pendingCandidateJsons: [String] = []
+
     init(pair: PairStore.PairedPair) {
         self.pair = pair
     }
@@ -143,9 +147,13 @@ actor RtcGlue {
             case "sdp":
                 guard let side = dict["side"] as? String, let sdp = dict["sdp"] as? String else { break }
                 if side == "answer" {
-                    try? await rtc.applyRemoteAnswer(sdp)
+                    if (try? await rtc.applyRemoteAnswer(sdp)) != nil {
+                        await self.flushPendingCandidates()
+                    }
                 } else if side == "offer" {
-                    try? await rtc.applyRemoteOffer(sdp)
+                    if (try? await rtc.applyRemoteOffer(sdp)) != nil {
+                        await self.flushPendingCandidates()
+                    }
                     if let answer = try? await rtc.createAnswer() {
                         let payload: [String: Any] = ["kind": "sdp", "side": "answer", "sdp": answer]
                         if let f = try? JSONSerialization.data(withJSONObject: payload),
@@ -156,7 +164,7 @@ actor RtcGlue {
                 }
             case "ice":
                 if let candidate = dict["candidate"] as? String {
-                    try? await rtc.applyRemoteCandidate(candidate)
+                    await self.applyRemoteCandidate(candidate)
                 }
             case "restart":
                 // Mac 主动触发 ICE restart，等待对端发来新 offer 即可（已由 sdp/offer 分支处理）。
@@ -182,11 +190,33 @@ actor RtcGlue {
         }
     }
 
+    // Buffer trickle-ICE candidates that arrive before remote description is set.
+    private func applyRemoteCandidate(_ candidateJson: String) async {
+        if !remoteDescriptionSet {
+            pendingCandidateJsons.append(candidateJson)
+            return
+        }
+        try? await rtc?.applyRemoteCandidate(candidateJson)
+    }
+
+    private func flushPendingCandidates() async {
+        remoteDescriptionSet = true
+        let pending = pendingCandidateJsons
+        pendingCandidateJsons.removeAll()
+        for json in pending {
+            try? await rtc?.applyRemoteCandidate(json)
+        }
+    }
+
     private func handleCtrlMessage(_ msg: String) {
         guard let ss = sharedSecret else { return }
         guard let data = msg.data(using: .utf8),
-              let signed = try? JSONDecoder().decode(SignedCtrl.self, from: data),
-              (try? signed.verify(sharedSecret: ss)) != nil else { return }
+              let signed = try? JSONDecoder().decode(SignedCtrl.self, from: data) else { return }
+        // N9: surface signature-verify failures so iOS console shows tampered/stale ctrl frames.
+        guard (try? signed.verify(sharedSecret: ss)) != nil else {
+            print("[rtc] sig verify failed for ctrl: \(msg)")
+            return
+        }
 
         switch signed.payload {
         case .heartbeat(_, let nonce):
@@ -231,10 +261,23 @@ actor RtcGlue {
             "ts": ts,
             "sig": sig,
         ])
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let arr = dict["ice_servers"] as? [[String: Any]] else { return nil }
-        return arr
+        // Retry with exponential backoff (immediate, 1s, 2s) so a 503 / cellular handover
+        // doesn't tear the whole glue down before the network has a chance to recover.
+        var delayNs: UInt64 = 0
+        for attempt in 0..<3 {
+            if attempt > 0 {
+                try? await Task.sleep(nanoseconds: delayNs)
+            }
+            if let (data, resp) = try? await URLSession.shared.data(for: req),
+               let http = resp as? HTTPURLResponse,
+               (200..<300).contains(http.statusCode),
+               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let arr = dict["ice_servers"] as? [[String: Any]] {
+                return arr
+            }
+            delayNs = delayNs == 0 ? 1_000_000_000 : delayNs * 2
+        }
+        return nil
     }
 }
 

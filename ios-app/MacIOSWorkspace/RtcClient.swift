@@ -173,6 +173,8 @@ actor RtcClient {
         guard let data = candidateJson.data(using: .utf8),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let sdp = dict["candidate"] as? String else {
+            // Surface malformed-candidate drops in the Xcode console (was silent).
+            print("[rtc] dropped malformed candidate: \(candidateJson)")
             return
         }
         let candidate = RTCIceCandidate(
