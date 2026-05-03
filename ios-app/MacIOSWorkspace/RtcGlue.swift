@@ -166,6 +166,9 @@ actor RtcGlue {
                 break
             }
         }
+        // Recv loop exited (network drop or peer close); v0.1 surfaces the failure
+        // so the user can re-Connect from Mac. Auto-reconnect is M9 polish.
+        emit(.failed)
         incomingVideoContinuation?.finish()
     }
 

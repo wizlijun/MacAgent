@@ -42,6 +42,8 @@ final class InputClient: ObservableObject {
     func submitText(_ text: String) async {
         if text.count > Self.pasteThreshold {
             await glue?.sendCtrl(.clipboardSet(source: .ios, content: .text(data: text)))
+            // Mac dispatches ClipboardSet and KeyCombo on independent tasks; sleep 50ms so pbcopy lands first.
+            try? await Task.sleep(nanoseconds: 50_000_000)
             await keyCombo([.cmd], "v")
         } else {
             await keyText(text)
