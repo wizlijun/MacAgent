@@ -32,7 +32,7 @@ describe("WS /signal/:id (post-pair)", () => {
   });
 
   it("rejects WS with bad signature", async () => {
-    // 建一个真实 pair，然后用错误的 secret 连接，触发 HMAC 校验失败 → 1008
+    // 建一个真实 pair，然后用错误的 secret 连接，触发 HMAC 校验失败 → 401（HTTP 层拒绝）
     const create = await SELF.fetch("https://e/pair/create", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ mac_pubkey: mac_pub_b64() }),
@@ -45,11 +45,18 @@ describe("WS /signal/:id (post-pair)", () => {
     const { pair_id } = await claim.json();
     // 用随机错误 secret 签名（pair 存在但 sig 错）
     const wrongSecret = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
-    const ws = await dialAuthedWS(pair_id, "mac", wrongSecret);
-    // 期望立刻被 close 1008 policy violation
-    const closeFrame = await waitClose(ws);
-    expect(closeFrame.code).toBe(1008);
-    await new Promise(r => setTimeout(r, 50));
+    const ts = Date.now();
+    const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
+    const msg = `ws-auth|mac|${pair_id}|${ts}|${nonce}`;
+    const key = await crypto.subtle.importKey(
+      "raw", Uint8Array.from(atob(wrongSecret), c => c.charCodeAt(0)),
+      { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+    );
+    const sigBytes = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(msg));
+    const sig = btoa(String.fromCharCode(...new Uint8Array(sigBytes)));
+    const url = `https://e/signal/${pair_id}?device=mac&ts=${ts}&nonce=${encodeURIComponent(nonce)}&sig=${encodeURIComponent(sig)}`;
+    const res = await SELF.fetch(url, { headers: { Upgrade: "websocket" } });
+    expect(res.status).toBe(401);
   });
 });
 
@@ -142,8 +149,4 @@ async function dialAuthedWS(pair_id: string, device: "mac" | "ios", secret_b64: 
 
 function waitMessage(ws: WebSocket): Promise<string> {
   return new Promise((resolve) => ws.addEventListener("message", (e: any) => resolve(e.data), { once: true }));
-}
-
-function waitClose(ws: WebSocket): Promise<{ code: number }> {
-  return new Promise((resolve) => ws.addEventListener("close", (e: any) => resolve({ code: e.code }), { once: true }));
 }

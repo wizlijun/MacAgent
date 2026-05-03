@@ -34,11 +34,9 @@ export class SignalingRoom extends DurableObject {
       b64decode(sig_b64),
     );
     if (!ok) {
-      // policy violation → 1008 close
-      const pair2 = new WebSocketPair();
-      pair2[1].accept();
-      pair2[1].close(1008, "bad signature");
-      return new Response(null, { status: 101, webSocket: pair2[0] });
+      // Reject at HTTP layer with 401 so iOS sees a clear auth failure
+      // instead of the ambiguous "WS established then 1008-closed" shape.
+      return new Response("bad signature", { status: 401 });
     }
 
     const wsPair = new WebSocketPair();
